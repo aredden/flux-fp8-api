@@ -1,0 +1,12 @@
+git+https://github.com/aredden/torch-cublas-hgemm.git@master
+git+https://github.com/pytorch/ao.git@main
+einops
+PyTurboJPEG
+pydantic
+fastapi
+bitsandbytes
+xformers
+loguru
+transformers
+tokenizers
+sentencepiece
