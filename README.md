@@ -1,6 +1,3 @@
-Sure, here's a draft for your README:
-
-````markdown
 # Flux FP16 Accumulate Model Implementation with FastAPI
 
 This repository contains an implementation of the Flux model, along with an API that allows you to generate images based on text prompts. The API can be run via command-line arguments.
@@ -21,7 +18,6 @@ To install the required dependencies, run:
 ```bash
 pip install -r requirements.txt
 ```
-````
 
 ## Usage
 
@@ -172,96 +168,4 @@ res = requests.post(
 with open(f"output.jpg", "wb") as f:
     f.write(io.BytesIO(res.content).read())
 
-```
-
-## License
-
-This project is licensed under the MIT License.
-
-````
-
-## References
-
-- Code for loading the pipeline from the configuration path:
-
-```200:310:flux_impl.py
-@torch.inference_mode()
-def load_pipeline_from_config(config: ModelSpec) -> Model:
-    models = load_models_from_config(config)
-    config = models.config
-    num_quanted = 0
-    max_quanted = config.num_to_quant
-    flux_device = into_device(config.flux_device)
-    ae_device = into_device(config.ae_device)
-    clip_device = into_device(config.text_enc_device)
-    t5_device = into_device(config.text_enc_device)
-    flux_dtype = into_dtype(config.flow_dtype)
-    device_index = flux_device.index or 0
-    flow_model = models.flow.requires_grad_(False).eval().type(flux_dtype)
-    for block in flow_model.single_blocks:
-        block.cuda(flux_device)
-        if num_quanted < max_quanted:
-            num_quanted = quant_module(
-                block.linear1, num_quanted, device_index=device_index
-            )
-
-    for block in flow_model.double_blocks:
-        block.cuda(flux_device)
-        if num_quanted < max_quanted:
-            num_quanted = full_quant(
-                block, max_quanted, num_quanted, device_index=device_index
-            )
-
-    to_gpu_extras = [
-        "vector_in",
-        "img_in",
-        "txt_in",
-        "time_in",
-        "guidance_in",
-        "final_layer",
-        "pe_embedder",
-    ]
-    for extra in to_gpu_extras:
-        getattr(flow_model, extra).cuda(flux_device).type(flux_dtype)
-````
-
--   Code for the main entry point:
-
-```59:85:main.py
-def main():
-    args = parse_args()
-
-    if args.config_path:
-        app.state.model = load_pipeline_from_config_path(args.config_path)
-    else:
-        model_version = (
-            ModelVersion.flux_dev
-            if args.model_version == "flux-dev"
-            else ModelVersion.flux_schnell
-        )
-        config = load_config(
-            model_version,
-            flux_path=args.flow_model_path,
-            flux_device=args.flux_device,
-            ae_path=args.autoencoder_path,
-            ae_device=args.autoencoder_device,
-            text_enc_path=args.text_enc_path,
-            text_enc_device=args.text_enc_device,
-            flow_dtype="float16",
-            text_enc_dtype="bfloat16",
-            ae_dtype="bfloat16",
-            num_to_quant=args.num_to_quant,
-        )
-        app.state.model = load_pipeline_from_config(config)
-
-    uvicorn.run(app, host=args.host, port=args.port)
-```
-
--   Code for the API endpoint:
-
-```22:25:api.py
-@app.post("/generate")
-def generate(args: GenerateArgs):
-    result = app.state.model.generate(**args.model_dump())
-    return StreamingResponse(result, media_type="image/jpeg")
 ```
