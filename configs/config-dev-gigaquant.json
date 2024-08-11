@@ -47,7 +47,6 @@
   "flow_dtype": "float16",
   "ae_dtype": "bfloat16",
   "text_enc_dtype": "bfloat16",
-  "num_to_quant": 22,
-  "compile_extras": false,
-  "compile_blocks": false
+  "num_to_quant": 8000,
+  "quantize_extras": true
 }

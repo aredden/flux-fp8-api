@@ -1,23 +1,25 @@
+from collections import namedtuple
+import os
 import torch
 
+DISABLE_COMPILE = os.getenv("DISABLE_COMPILE", "0") == "1"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.benchmark_limit = 20
 torch.set_float32_matmul_precision("high")
 import math
-from dataclasses import dataclass
 
-from cublas_linear import CublasLinear as F16Linear
-from einops.layers.torch import Rearrange
 from torch import Tensor, nn
 from torch._dynamo import config
 from torch._inductor import config as ind_config
-from xformers.ops import memory_efficient_attention
+from xformers.ops import memory_efficient_attention_forward
 from pydantic import BaseModel
+from torch.nn import functional as F
 
 config.cache_size_limit = 10000000000
-ind_config.force_fuse_int_mm_with_mul = True
+ind_config.compile_threads = os.cpu_count()
+ind_config.shape_padding = True
 
 
 class FluxParams(BaseModel):
@@ -35,17 +37,16 @@ class FluxParams(BaseModel):
     guidance_embed: bool
 
 
-@torch.compile(mode="reduce-overhead")
+# attention is always same shape each time it's called per H*W, so compile with fullgraph
+@torch.compile(mode="reduce-overhead", fullgraph=True, disable=DISABLE_COMPILE)
 def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor) -> Tensor:
     q, k = apply_rope(q, k, pe)
-    x = memory_efficient_attention(
-        q.transpose(1, 2), k.transpose(1, 2), v.transpose(1, 2)
-    )
+    x = F.scaled_dot_product_attention(q, k, v).transpose(1, 2)
     x = x.reshape(*x.shape[:-2], -1)
     return x
 
 
-@torch.compile(mode="reduce-overhead")
+@torch.compile(mode="reduce-overhead", disable=DISABLE_COMPILE)
 def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
     scale = torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device) / dim
     omega = 1.0 / (theta**scale)
@@ -119,21 +120,12 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
 class MLPEmbedder(nn.Module):
     def __init__(self, in_dim: int, hidden_dim: int):
         super().__init__()
-        self.in_layer = F16Linear(in_dim, hidden_dim, bias=True)
+        self.in_layer = nn.Linear(in_dim, hidden_dim, bias=True)
         self.silu = nn.SiLU()
-        self.out_layer = F16Linear(hidden_dim, hidden_dim, bias=True)
+        self.out_layer = nn.Linear(hidden_dim, hidden_dim, bias=True)
 
     def forward(self, x: Tensor) -> Tensor:
         return self.out_layer(self.silu(self.in_layer(x)))
-
-
-@torch.compile(mode="reduce-overhead", dynamic=True)
-def calculation(
-    x,
-):
-    rrms = torch.rsqrt(torch.mean(x.pow(2), dim=-1, keepdim=True) + 1e-6)
-    x = x * rrms
-    return x
 
 
 class RMSNorm(torch.nn.Module):
@@ -142,7 +134,7 @@ class RMSNorm(torch.nn.Module):
         self.scale = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: Tensor):
-        return calculation(x) * self.scale
+        return F.rms_norm(x, self.scale.shape, self.scale, eps=1e-6)
 
 
 class QKNorm(torch.nn.Module):
@@ -163,25 +155,28 @@ class SelfAttention(nn.Module):
         self.num_heads = num_heads
         head_dim = dim // num_heads
 
-        self.qkv = F16Linear(dim, dim * 3, bias=qkv_bias)
+        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.norm = QKNorm(head_dim)
-        self.proj = F16Linear(dim, dim)
-        self.rearrange = Rearrange("B L (K H D) -> K B H L D", K=3, H=num_heads)
+        self.proj = nn.Linear(dim, dim)
+        self.K = 3
+        self.H = self.num_heads
+        self.KH = self.K * self.H
+
+    def rearrange_for_norm(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        B, L, D = x.shape
+        q, k, v = x.reshape(B, L, self.K, self.H, D // self.KH).permute(2, 0, 3, 1, 4)
+        return q, k, v
 
     def forward(self, x: Tensor, pe: Tensor) -> Tensor:
         qkv = self.qkv(x)
-        q, k, v = self.rearrange(qkv)
+        q, k, v = self.rearrange_for_norm(qkv)
         q, k = self.norm(q, k, v)
         x = attention(q, k, v, pe=pe)
         x = self.proj(x)
         return x
 
 
-@dataclass
-class ModulationOut:
-    shift: Tensor
-    scale: Tensor
-    gate: Tensor
+ModulationOut = namedtuple("ModulationOut", ["shift", "scale", "gate"])
 
 
 class Modulation(nn.Module):
@@ -225,9 +220,9 @@ class DoubleStreamBlock(nn.Module):
 
         self.img_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.img_mlp = nn.Sequential(
-            F16Linear(hidden_size, mlp_hidden_dim, bias=True),
+            nn.Linear(hidden_size, mlp_hidden_dim, bias=True),
             nn.GELU(approximate="tanh"),
-            F16Linear(mlp_hidden_dim, hidden_size, bias=True),
+            nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
         )
 
         self.txt_mod = Modulation(hidden_size, double=True)
@@ -238,13 +233,18 @@ class DoubleStreamBlock(nn.Module):
 
         self.txt_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.txt_mlp = nn.Sequential(
-            (F16Linear(hidden_size, mlp_hidden_dim, bias=True)),
+            (nn.Linear(hidden_size, mlp_hidden_dim, bias=True)),
             nn.GELU(approximate="tanh"),
-            (F16Linear(mlp_hidden_dim, hidden_size, bias=True)),
+            (nn.Linear(mlp_hidden_dim, hidden_size, bias=True)),
         )
-        self.rearrange_for_norm = Rearrange(
-            "B L (K H D) -> K B H L D", K=3, H=num_heads
-        )
+        self.K = 3
+        self.H = self.num_heads
+        self.KH = self.K * self.H
+
+    def rearrange_for_norm(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
+        B, L, D = x.shape
+        q, k, v = x.reshape(B, L, self.K, self.H, D // self.KH).permute(2, 0, 3, 1, 4)
+        return q, k, v
 
     def forward(
         self,
@@ -316,7 +316,7 @@ class SingleStreamBlock(nn.Module):
         # qkv and mlp_in
         self.linear1 = nn.Linear(hidden_size, hidden_size * 3 + self.mlp_hidden_dim)
         # proj and mlp_out
-        self.linear2 = F16Linear(hidden_size + self.mlp_hidden_dim, hidden_size)
+        self.linear2 = nn.Linear(hidden_size + self.mlp_hidden_dim, hidden_size)
 
         self.norm = QKNorm(head_dim)
 
@@ -325,9 +325,10 @@ class SingleStreamBlock(nn.Module):
 
         self.mlp_act = nn.GELU(approximate="tanh")
         self.modulation = Modulation(hidden_size, double=False)
-        self.rearrange_for_norm = Rearrange(
-            "B L (K H D) -> K B H L D", K=3, H=num_heads
-        )
+
+        self.K = 3
+        self.H = self.num_heads
+        self.KH = self.K * self.H
 
     def forward(self, x: Tensor, vec: Tensor, pe: Tensor) -> Tensor:
         mod = self.modulation(vec)[0]
@@ -338,7 +339,8 @@ class SingleStreamBlock(nn.Module):
             [3 * self.hidden_size, self.mlp_hidden_dim],
             dim=-1,
         )
-        q, k, v = self.rearrange_for_norm(qkv)
+        B, L, D = qkv.shape
+        q, k, v = qkv.reshape(B, L, self.K, self.H, D // self.KH).permute(2, 0, 3, 1, 4)
         q, k = self.norm(q, k, v)
         attn = attention(q, k, v, pe=pe)
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2)).clamp(
@@ -394,7 +396,7 @@ class Flux(nn.Module):
             axes_dim=params.axes_dim,
             dtype=self.dtype,
         )
-        self.img_in = F16Linear(self.in_channels, self.hidden_size, bias=True)
+        self.img_in = nn.Linear(self.in_channels, self.hidden_size, bias=True)
         self.time_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size)
         self.vector_in = MLPEmbedder(params.vec_in_dim, self.hidden_size)
         self.guidance_in = (
@@ -402,7 +404,7 @@ class Flux(nn.Module):
             if params.guidance_embed
             else nn.Identity()
         )
-        self.txt_in = F16Linear(params.context_in_dim, self.hidden_size)
+        self.txt_in = nn.Linear(params.context_in_dim, self.hidden_size)
 
         self.double_blocks = nn.ModuleList(
             [
@@ -464,10 +466,13 @@ class Flux(nn.Module):
         ids = torch.cat((txt_ids, img_ids), dim=1)
         pe = self.pe_embedder(ids)
 
-        for i, block in enumerate(self.double_blocks):
+        # double stream blocks
+        for block in self.double_blocks:
             img, txt = block(img=img, txt=txt, vec=vec, pe=pe)
 
         img = torch.cat((txt, img), 1)
+
+        # single stream blocks
         for block in self.single_blocks:
             img = block(img, vec=vec, pe=pe)
 
@@ -476,17 +481,14 @@ class Flux(nn.Module):
         return img
 
     @classmethod
-    def from_safetensors(
-        self,
-        model_path: str,
-        model_params: FluxParams,
-        dtype: torch.dtype = torch.bfloat16,
-        device: torch.device = torch.device(
-            "cuda" if torch.cuda.is_available() else "cpu"
-        ),
-    ):
+    def from_pretrained(cls, path: str, dtype: torch.dtype = torch.bfloat16) -> "Flux":
+        from util import load_config_from_path
+        from safetensors.torch import load_file
 
-        model = Flux(params=model_params, dtype=dtype)
-        model.load_state_dict(model_path.state_dict())
-        model.to(device)
-        return model
+        config = load_config_from_path(path)
+        with torch.device("meta"):
+            klass = cls(params=config.params, dtype=dtype).type(dtype)
+
+        ckpt = load_file(config.ckpt_path, device="cpu")
+        klass.load_state_dict(ckpt, assign=True)
+        return klass.to("cpu")

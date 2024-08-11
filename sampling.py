@@ -32,7 +32,12 @@ def get_noise(
 
 @torch.inference_mode()
 def prepare(
-    t5: HFEmbedder, clip: HFEmbedder, img: Tensor, prompt: str | list[str]
+    t5: HFEmbedder,
+    clip: HFEmbedder,
+    img: Tensor,
+    prompt: str | list[str],
+    target_device: torch.device = torch.device("cuda:0"),
+    target_dtype: torch.dtype = torch.float16,
 ) -> dict[str, Tensor]:
     bs, c, h, w = img.shape
     if bs == 1 and not isinstance(prompt, str):
@@ -42,28 +47,34 @@ def prepare(
     if img.shape[0] == 1 and bs > 1:
         img = repeat(img, "1 ... -> bs ...", bs=bs)
 
-    img_ids = torch.zeros(h // 2, w // 2, 3)
-    img_ids[..., 1] = img_ids[..., 1] + torch.arange(h // 2)[:, None]
-    img_ids[..., 2] = img_ids[..., 2] + torch.arange(w // 2)[None, :]
+    img_ids = torch.zeros(h // 2, w // 2, 3, device=target_device, dtype=target_dtype)
+    img_ids[..., 1] = (
+        img_ids[..., 1]
+        + torch.arange(h // 2, device=target_device, dtype=target_dtype)[:, None]
+    )
+    img_ids[..., 2] = (
+        img_ids[..., 2]
+        + torch.arange(w // 2, device=target_device, dtype=target_dtype)[None, :]
+    )
     img_ids = repeat(img_ids, "h w c -> b (h w) c", b=bs)
 
     if isinstance(prompt, str):
         prompt = [prompt]
-    txt = t5(prompt)
+    txt = t5(prompt).to(target_device, dtype=target_dtype)
     if txt.shape[0] == 1 and bs > 1:
         txt = repeat(txt, "1 ... -> bs ...", bs=bs)
-    txt_ids = torch.zeros(bs, txt.shape[1], 3)
+    txt_ids = torch.zeros(bs, txt.shape[1], 3, device=target_device, dtype=target_dtype)
 
-    vec = clip(prompt)
+    vec = clip(prompt).to(target_device, dtype=target_dtype)
     if vec.shape[0] == 1 and bs > 1:
         vec = repeat(vec, "1 ... -> bs ...", bs=bs)
 
     return {
         "img": img,
-        "img_ids": img_ids.to(img.device),
-        "txt": txt.to(img.device),
-        "txt_ids": txt_ids.to(img.device),
-        "vec": vec.to(img.device),
+        "img_ids": img_ids,
+        "txt": txt,
+        "txt_ids": txt_ids,
+        "vec": vec,
     }
 
 
@@ -116,11 +127,6 @@ def denoise(
     from tqdm import tqdm
 
     # this is ignored for schnell
-    img = img.to(device=device, dtype=dtype)
-    img_ids = img_ids.to(device=device, dtype=dtype)
-    txt = txt.to(device=device, dtype=dtype)
-    txt_ids = txt_ids.to(device=device, dtype=dtype)
-    vec = vec.to(device=device, dtype=dtype)
     guidance_vec = torch.full((img.shape[0],), guidance, device=device, dtype=dtype)
     for t_curr, t_prev in tqdm(
         zip(timesteps[:-1], timesteps[1:]), total=len(timesteps) - 1

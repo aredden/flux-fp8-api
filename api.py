@@ -17,6 +17,8 @@ class GenerateArgs(BaseModel):
     seed: Optional[int] = Field(
         default_factory=lambda: np.random.randint(0, 2**32 - 1), gt=0, lt=2**32 - 1
     )
+    strength: Optional[float] = 1.0
+    init_image: Optional[str] = None
 
 
 @app.post("/generate")

@@ -1,1 +1,12 @@
 __pycache__
+*.jpg
+*.png
+*.jpeg
+*.gif
+*.bmp
+*.webp
+*.mp4
+*.mp3
+*.mp3
+*.txt
+.copilotignore

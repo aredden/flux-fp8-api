@@ -2,7 +2,7 @@ from torch import Tensor, nn
 import torch
 from transformers import CLIPTextModel, CLIPTokenizer, T5EncoderModel, T5Tokenizer
 
-from transformers.utils.quantization_config import BitsAndBytesConfig
+from transformers.utils.quantization_config import BitsAndBytesConfig, QuantoConfig
 
 
 class HFEmbedder(nn.Module):
@@ -30,8 +30,8 @@ class HFEmbedder(nn.Module):
                 version,
                 **hf_kwargs,
                 device_map={"": device},
-                quantization_config=BitsAndBytesConfig(
-                    load_in_4bit=True,
+                quantization_config=QuantoConfig(
+                    weights="float8",
                 ),
             )
 

@@ -36,6 +36,9 @@ class ModelSpec(BaseModel):
     ae_dtype: str = "bfloat16"
     text_enc_dtype: str = "bfloat16"
     num_to_quant: Optional[int] = 20
+    quantize_extras: bool = False
+    compile_extras: bool = False
+    compile_blocks: bool = False
 
     model_config: ConfigDict = {
         "arbitrary_types_allowed": True,
@@ -93,6 +96,8 @@ def load_config(
     ae_dtype: str = "bfloat16",
     text_enc_dtype: str = "bfloat16",
     num_to_quant: Optional[int] = 20,
+    compile_extras: bool = False,
+    compile_blocks: bool = False,
 ):
     text_enc_device = str(parse_device(text_enc_device))
     ae_device = str(parse_device(ae_device))
@@ -144,6 +149,8 @@ def load_config(
         text_enc_dtype=text_enc_dtype,
         text_enc_max_length=512 if name == ModelVersion.flux_dev else 256,
         num_to_quant=num_to_quant,
+        compile_extras=compile_extras,
+        compile_blocks=compile_blocks,
     )
 
 
