@@ -13,7 +13,6 @@ import math
 from torch import Tensor, nn
 from torch._dynamo import config
 from torch._inductor import config as ind_config
-from xformers.ops import memory_efficient_attention_forward
 from pydantic import BaseModel
 from torch.nn import functional as F
 

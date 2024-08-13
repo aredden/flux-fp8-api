@@ -5,9 +5,33 @@ import torch
 from click import secho
 from cublas_ops import CublasLinear
 
-from quanto.nn import QModuleMixin, quantize_module, QLinear, QConv2d, QLayerNorm
-from quanto.tensor import Optimizer, qtype, qfloat8
+from quanto import (
+    QModuleMixin,
+    quantize_module,
+    QLinear,
+    QConv2d,
+    QLayerNorm,
+)
+from quanto.tensor import Optimizer, qtype, qfloat8, qint4, qint8
 from torch import nn
+
+
+class QuantizationDtype:
+    qfloat8 = "qfloat8"
+    qint2 = "qint2"
+    qint4 = "qint4"
+    qint8 = "qint8"
+
+
+def into_qtype(qtype: QuantizationDtype) -> qtype:
+    if qtype == QuantizationDtype.qfloat8:
+        return qfloat8
+    elif qtype == QuantizationDtype.qint4:
+        return qint4
+    elif qtype == QuantizationDtype.qint8:
+        return qint8
+    else:
+        raise ValueError(f"Unknown qtype: {qtype}")
 
 
 def _set_module_by_name(parent_module, name, child_module):
@@ -121,7 +145,12 @@ def _is_block_compilable(module: nn.Module) -> bool:
 
 def _simple_swap_linears(model: nn.Module, root_name: str = ""):
     for name, module in model.named_children():
-        if _is_linear(module):
+        if (
+            _is_linear(module)
+            and hasattr(module, "weight")
+            and module.weight is not None
+            and module.weight.data is not None
+        ):
             weights = module.weight.data
             bias = None
             if module.bias is not None:
@@ -155,7 +184,7 @@ def _full_quant(
     if current_quants < max_quants:
         current_quants += _quantize(model, quantization_dtype)
         _freeze(model)
-        print(f"Quantized {current_quants} modules")
+        print(f"Quantized {current_quants} modules with {quantization_dtype}")
     return current_quants
 
 
@@ -174,11 +203,13 @@ def quantize_and_dispatch_to_device(
     flux_device: torch.device = torch.device("cuda"),
     flux_dtype: torch.dtype = torch.float16,
     num_layers_to_quantize: int = 20,
-    quantization_dtype: qtype = qfloat8,
+    quantization_dtype: QuantizationDtype = QuantizationDtype.qfloat8,
     compile_blocks: bool = True,
     compile_extras: bool = True,
     quantize_extras: bool = False,
+    replace_linears: bool = True,
 ):
+    quant_type = into_qtype(quantization_dtype)
     num_quanted = 0
     flow_model = flow_model.requires_grad_(False).eval().type(flux_dtype)
     for block in flow_model.single_blocks:
@@ -188,7 +219,7 @@ def quantize_and_dispatch_to_device(
                 block,
                 num_layers_to_quantize,
                 num_quanted,
-                quantization_dtype=quantization_dtype,
+                quantization_dtype=quant_type,
             )
 
     for block in flow_model.double_blocks:
@@ -198,7 +229,7 @@ def quantize_and_dispatch_to_device(
                 block,
                 num_layers_to_quantize,
                 num_quanted,
-                quantization_dtype=quantization_dtype,
+                quantization_dtype=quant_type,
             )
 
     to_gpu_extras = [
@@ -221,10 +252,11 @@ def quantize_and_dispatch_to_device(
                 block.compile()
                 secho(f"Compiled block {i}", fg="green")
 
-    _simple_swap_linears(flow_model)
+    if replace_linears:
+        _simple_swap_linears(flow_model)
     for extra in to_gpu_extras:
         m_extra = getattr(flow_model, extra).cuda(flux_device).type(flux_dtype)
-        if compile_blocks:
+        if compile_extras:
             if extra in ["time_in", "vector_in", "guidance_in", "final_layer"]:
                 m_extra.compile()
                 secho(
@@ -232,10 +264,11 @@ def quantize_and_dispatch_to_device(
                     fg="green",
                 )
         elif quantize_extras:
-            _full_quant(
-                m_extra,
-                current_quants=num_quanted,
-                max_quants=num_layers_to_quantize,
-                quantization_dtype=quantization_dtype,
-            )
+            if not isinstance(m_extra, nn.Linear):
+                _full_quant(
+                    m_extra,
+                    current_quants=num_quanted,
+                    max_quants=num_layers_to_quantize,
+                    quantization_dtype=quantization_dtype,
+                )
     return flow_model

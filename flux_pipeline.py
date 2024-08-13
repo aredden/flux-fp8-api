@@ -394,6 +394,7 @@ class FluxPipeline:
         from quantize_swap_and_dispatch import quantize_and_dispatch_to_device
 
         with torch.inference_mode():
+            print("flow_quantization_dtype", config.flow_quantization_dtype)
 
             models = load_models_from_config(config)
             config = models.config
@@ -413,6 +414,7 @@ class FluxPipeline:
                 compile_extras=config.compile_extras,
                 compile_blocks=config.compile_blocks,
                 quantize_extras=config.quantize_extras,
+                quantization_dtype=config.flow_quantization_dtype,
             )
 
         return cls(

@@ -18,6 +18,13 @@ class ModelVersion(StrEnum):
     flux_schnell = "flux-schnell"
 
 
+class QuantizationDtype(StrEnum):
+    qfloat8 = "qfloat8"
+    qint2 = "qint2"
+    qint4 = "qint4"
+    qint8 = "qint8"
+
+
 class ModelSpec(BaseModel):
     version: ModelVersion
     params: FluxParams
@@ -39,6 +46,10 @@ class ModelSpec(BaseModel):
     quantize_extras: bool = False
     compile_extras: bool = False
     compile_blocks: bool = False
+    flow_quantization_dtype: Optional[QuantizationDtype] = QuantizationDtype.qfloat8
+    text_enc_quantization_dtype: Optional[QuantizationDtype] = QuantizationDtype.qfloat8
+    ae_quantization_dtype: Optional[QuantizationDtype] = None
+    clip_quantization_dtype: Optional[QuantizationDtype] = None
 
     model_config: ConfigDict = {
         "arbitrary_types_allowed": True,
@@ -199,13 +210,15 @@ def load_text_encoders(config: ModelSpec) -> tuple[HFEmbedder, HFEmbedder]:
         "openai/clip-vit-large-patch14",
         max_length=77,
         torch_dtype=into_dtype(config.text_enc_dtype),
-        device=into_device(config.text_enc_device),
+        device=into_device(config.text_enc_device).index or 0,
+        quantization_dtype=config.clip_quantization_dtype,
     )
     t5 = HFEmbedder(
         config.text_enc_path,
         max_length=config.text_enc_max_length,
         torch_dtype=into_dtype(config.text_enc_dtype),
         device=into_device(config.text_enc_device).index or 0,
+        quantization_dtype=config.text_enc_quantization_dtype,
     )
     return clip, t5
 
@@ -213,12 +226,22 @@ def load_text_encoders(config: ModelSpec) -> tuple[HFEmbedder, HFEmbedder]:
 def load_autoencoder(config: ModelSpec) -> AutoEncoder:
     ckpt_path = config.ae_path
     with torch.device("meta" if ckpt_path is not None else config.ae_device):
-        ae = AutoEncoder(config.ae_params)
+        ae = AutoEncoder(config.ae_params).to(into_dtype(config.ae_dtype))
 
     if ckpt_path is not None:
         sd = load_sft(ckpt_path, device=str(config.ae_device))
         missing, unexpected = ae.load_state_dict(sd, strict=False, assign=True)
         print_load_warning(missing, unexpected)
+    if config.ae_quantization_dtype is not None:
+        from quantize_swap_and_dispatch import _full_quant, into_qtype
+
+        ae.to(into_device(config.ae_device))
+        _full_quant(
+            ae,
+            max_quants=8000,
+            current_quants=0,
+            quantization_dtype=into_qtype(config.ae_quantization_dtype),
+        )
     return ae
 
 
