@@ -6,7 +6,7 @@ import torch
 from modules.autoencoder import AutoEncoder, AutoEncoderParams
 from modules.conditioner import HFEmbedder
 from modules.flux_model import Flux, FluxParams
-
+from modules.flux_model_f8 import Flux as FluxF8
 from safetensors.torch import load_file as load_sft
 from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
@@ -53,6 +53,7 @@ class ModelSpec(BaseModel):
     offload_text_encoder: bool = False
     offload_vae: bool = False
     offload_flow: bool = False
+    prequantized_flow: bool = False
 
     model_config: ConfigDict = {
         "arbitrary_types_allowed": True,
@@ -194,9 +195,14 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
 
 def load_flow_model(config: ModelSpec) -> Flux:
     ckpt_path = config.ckpt_path
+    FluxClass = Flux
+    if config.prequantized_flow:
+        from modules.flux_model_f8 import Flux as FluxF8
+
+        FluxClass = FluxF8
 
     with torch.device("meta"):
-        model = Flux(config.params, dtype=into_dtype(config.flow_dtype)).type(
+        model = FluxClass(config.params, dtype=into_dtype(config.flow_dtype)).type(
             into_dtype(config.flow_dtype)
         )
 
@@ -247,7 +253,7 @@ def load_autoencoder(config: ModelSpec) -> AutoEncoder:
 
 
 class LoadedModels(BaseModel):
-    flow: Flux
+    flow: Flux | FluxF8
     ae: AutoEncoder
     clip: HFEmbedder
     t5: HFEmbedder

@@ -92,18 +92,26 @@ class FluxPipeline:
         self.offload_text_encoder = config.offload_text_encoder
         self.offload_vae = config.offload_vae
         self.offload_flow = config.offload_flow
+        if not self.offload_flow:
+            self.model.to(self.device_flux)
+        if not self.offload_vae:
+            self.ae.to(self.device_ae)
+        if not self.offload_text_encoder:
+            self.clip.to(self.device_clip)
+            self.t5.to(self.device_t5)
 
         if self.config.compile_blocks or self.config.compile_extras:
-            print("Warmups for compile...")
-            warmup_dict = dict(
-                prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
-                height=1024,
-                width=1024,
-                num_steps=30,
-                guidance=3.5,
-                seed=10,
-            )
-            self.generate(**warmup_dict)
+            if not self.config.prequantized_flow:
+                print("Warmups for compile...")
+                warmup_dict = dict(
+                    prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
+                    height=1024,
+                    width=1024,
+                    num_steps=30,
+                    guidance=3.5,
+                    seed=10,
+                )
+                self.generate(**warmup_dict)
             to_gpu_extras = [
                 "vector_in",
                 "img_in",
@@ -247,7 +255,7 @@ class FluxPipeline:
             im = torch.vstack(images)
 
         torch.cuda.synchronize()
-        im = self.turbojpeg.encode_torch(im, quality=99)
+        im = self.img_encoder.encode_torch(im, quality=99)
         images.clear()
         return io.BytesIO(im)
 
@@ -458,6 +466,7 @@ class FluxPipeline:
 
         with torch.inference_mode():
             print("flow_quantization_dtype", config.flow_quantization_dtype)
+            print("prequantized_flow?", config.prequantized_flow)
 
             models = load_models_from_config(config)
             config = models.config
@@ -466,13 +475,14 @@ class FluxPipeline:
             clip_device = into_device(config.text_enc_device)
             t5_device = into_device(config.text_enc_device)
             flux_dtype = into_dtype(config.flow_dtype)
-            flow_model = models.flow.type(flux_dtype).to(
-                memory_format=torch.channels_last
-            )
+            flow_model = models.flow
 
-            flow_model = quantize_flow_transformer_and_dispatch_float8(
-                flow_model, flux_device
-            )
+            if not config.prequantized_flow:
+                flow_model = quantize_flow_transformer_and_dispatch_float8(
+                    flow_model, flux_device, offload_flow=config.offload_flow
+                )
+            else:
+                flow_model.eval().requires_grad_(False)
 
         return cls(
             name=config.version,
@@ -492,7 +502,7 @@ class FluxPipeline:
 
 if __name__ == "__main__":
     pipe = FluxPipeline.load_pipeline_from_config_path(
-        "configs/config-dev-offload.json"
+        "configs/config-dev-prequant.json",
     )
     o = pipe.generate(
         prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
@@ -503,7 +513,7 @@ if __name__ == "__main__":
         seed=10,
     )
     open("out.jpg", "wb").write(o.read())
-    for x in range(10):
+    for x in range(2):
 
         o = pipe.generate(
             prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",

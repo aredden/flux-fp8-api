@@ -1,3 +1,4 @@
+from typing import Any, Mapping
 import torch
 import torch.nn as nn
 from torchao.float8.float8_utils import (
@@ -16,6 +17,24 @@ except ImportError:
     CublasLinear = type(None)
 
 
+def check_scale_tensor(tensor):
+    return (
+        tensor is not None
+        and isinstance(tensor, torch.Tensor)
+        and tensor.dtype == torch.float32
+        and tensor.numel() == 1
+        and tensor != torch.zeros_like(tensor)
+    )
+
+
+def check_scale_in_state_dict(state_dict, key):
+    return key in state_dict and check_scale_tensor(state_dict[key])
+
+
+def check_scales_given_state_dict_and_keys(state_dict, keys):
+    return all(check_scale_in_state_dict(state_dict, key) for key in keys)
+
+
 class F8Linear(nn.Module):
 
     def __init__(
@@ -24,7 +43,7 @@ class F8Linear(nn.Module):
         out_features: int,
         bias: bool = True,
         device=None,
-        dtype=None,
+        dtype=torch.float16,
         float8_dtype=torch.float8_e4m3fn,
         float_weight: torch.Tensor = None,
         float_bias: torch.Tensor = None,
@@ -53,7 +72,6 @@ class F8Linear(nn.Module):
             if bias:
                 self.bias = nn.Parameter(
                     torch.empty(out_features, **factory_kwargs),
-                    requires_grad=bias.requires_grad,
                 )
             else:
                 self.register_parameter("bias", None)
@@ -77,6 +95,85 @@ class F8Linear(nn.Module):
         self.input_scale_reciprocal = self.register_buffer(
             "input_scale_reciprocal", None
         )
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        sd = {k.replace(prefix, ""): v for k, v in state_dict.items()}
+        if "weight" in sd:
+            if (
+                "float8_data" not in sd
+                or sd["float8_data"] is None
+                and sd["weight"].shape == (self.out_features, self.in_features)
+            ):
+                # Initialize as if it's an F8Linear that needs to be quantized
+                self._parameters["weight"] = nn.Parameter(
+                    sd["weight"], requires_grad=False
+                )
+                if "bias" in sd:
+                    self._parameters["bias"] = nn.Parameter(
+                        sd["bias"], requires_grad=False
+                    )
+                self.quantize_weight()
+            elif sd["float8_data"].shape == (
+                self.out_features,
+                self.in_features,
+            ) and sd["weight"] == torch.zeros_like(sd["weight"]):
+                w = sd["weight"]
+                # Set the init values as if it's already quantized float8_data
+                self.float8_data = sd["float8_data"]
+                self._parameters["weight"] = nn.Parameter(
+                    torch.zeros(
+                        1,
+                        dtype=w.dtype,
+                        device=w.device,
+                        requires_grad=False,
+                    )
+                )
+                if "bias" in sd:
+                    self._parameters["bias"] = nn.Parameter(
+                        sd["bias"], requires_grad=False
+                    )
+                self.weight_initialized = True
+
+                # Check if scales and reciprocals are initialized
+                if all(
+                    key in sd
+                    for key in [
+                        "scale",
+                        "input_scale",
+                        "scale_reciprocal",
+                        "input_scale_reciprocal",
+                    ]
+                ):
+                    self.scale = sd["scale"].float()
+                    self.input_scale = sd["input_scale"].float()
+                    self.scale_reciprocal = sd["scale_reciprocal"].float()
+                    self.input_scale_reciprocal = sd["input_scale_reciprocal"].float()
+                    self.input_scale_initialized = True
+                    self.trial_index = self.num_scale_trials
+                else:
+                    # If scales are not initialized, reset trials
+                    self.input_scale_initialized = False
+                    self.trial_index = 0
+                    self.input_amax_trials = torch.zeros(
+                        self.num_scale_trials, requires_grad=False, dtype=torch.float32
+                    )
+            else:
+                raise RuntimeError(
+                    f"Weight tensor not found or has incorrect shape in state dict: {sd.keys()}"
+                )
+        else:
+            raise RuntimeError(
+                "Weight tensor not found or has incorrect shape in state dict"
+            )
 
     def quantize_weight(self):
         if self.weight_initialized:
