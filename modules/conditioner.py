@@ -1,10 +1,6 @@
 import os
 
 import torch
-from pydash import max_
-from quanto import freeze, qfloat8, qint2, qint4, qint8, quantize
-from quanto.nn.qmodule import _QMODULE_TABLE
-from safetensors.torch import load_file, load_model, save_model
 from torch import Tensor, nn
 from transformers import (
     CLIPTextModel,
@@ -13,7 +9,7 @@ from transformers import (
     T5Tokenizer,
     __version__,
 )
-from transformers.utils.quantization_config import QuantoConfig
+from transformers.utils.quantization_config import QuantoConfig, BitsAndBytesConfig
 
 CACHE_DIR = os.environ.get("HF_HOME", "~/.cache/huggingface")
 
@@ -31,6 +27,25 @@ def into_quantization_name(quantization_dtype: str) -> str:
         raise ValueError(f"Unsupported quantization dtype: {quantization_dtype}")
 
 
+def auto_quantization_config(
+    quantization_dtype: str,
+) -> QuantoConfig | BitsAndBytesConfig:
+    if quantization_dtype == "qfloat8":
+        return QuantoConfig(weights="float8")
+    elif quantization_dtype == "qint4":
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
+    elif quantization_dtype == "qint8":
+        return BitsAndBytesConfig(load_in_8bit=True, llm_int8_has_fp16_weight=False)
+    elif quantization_dtype == "qint2":
+        return QuantoConfig(weights="int2")
+    else:
+        raise ValueError(f"Unsupported quantization dtype: {quantization_dtype}")
+
+
 class HFEmbedder(nn.Module):
     def __init__(
         self,
@@ -38,15 +53,21 @@ class HFEmbedder(nn.Module):
         max_length: int,
         device: torch.device | int,
         quantization_dtype: str | None = None,
+        offloading_device: torch.device | int | None = torch.device("cpu"),
         **hf_kwargs,
     ):
         super().__init__()
+        self.offloading_device = (
+            offloading_device
+            if isinstance(offloading_device, torch.device)
+            else torch.device(offloading_device)
+        )
+        self.device = (
+            device if isinstance(device, torch.device) else torch.device(device)
+        )
         self.is_clip = version.startswith("openai")
         self.max_length = max_length
         self.output_key = "pooler_output" if self.is_clip else "last_hidden_state"
-        quant_name = (
-            into_quantization_name(quantization_dtype) if quantization_dtype else None
-        )
 
         if self.is_clip:
             self.tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(
@@ -57,13 +78,10 @@ class HFEmbedder(nn.Module):
                 version,
                 **hf_kwargs,
                 quantization_config=(
-                    QuantoConfig(
-                        weights=quant_name,
-                    )
-                    if quant_name
+                    auto_quantization_config(quantization_dtype)
+                    if quantization_dtype
                     else None
                 ),
-                device_map={"": device},
             )
 
         else:
@@ -72,16 +90,20 @@ class HFEmbedder(nn.Module):
             )
             self.hf_module: T5EncoderModel = T5EncoderModel.from_pretrained(
                 version,
-                device_map={"": device},
                 **hf_kwargs,
                 quantization_config=(
-                    QuantoConfig(
-                        weights=quant_name,
-                    )
-                    if quant_name
+                    auto_quantization_config(quantization_dtype)
+                    if quantization_dtype
                     else None
                 ),
             )
+
+    def offload(self):
+        self.hf_module.to(device=self.offloading_device)
+        torch.cuda.empty_cache()
+
+    def cuda(self):
+        self.hf_module.to(device=self.device)
 
     def forward(self, text: list[str]) -> Tensor:
         batch_encoding = self.tokenizer(

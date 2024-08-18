@@ -1,13 +1,12 @@
-import base64
 import io
 import math
 from typing import TYPE_CHECKING, Callable, List
 from PIL import Image
-from einops import rearrange, repeat
 import numpy as np
 
 import torch
 
+from einops import rearrange
 from flux_emphasis import get_weighted_text_embeddings_flux
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -20,10 +19,9 @@ from torch._inductor import config as ind_config
 from pybase64 import standard_b64decode
 
 config.cache_size_limit = 10000000000
-ind_config.force_fuse_int_mm_with_mul = True
-
+ind_config.shape_padding = True
 from loguru import logger
-from turbojpeg_imgs import TurboImage
+from image_encoder import ImageEncoder
 from torchvision.transforms import functional as TF
 from tqdm import tqdm
 from util import (
@@ -50,7 +48,7 @@ class FluxPipeline:
         t5: "HFEmbedder" = None,
         model: "Flux" = None,
         ae: "AutoEncoder" = None,
-        dtype: torch.dtype = torch.bfloat16,
+        dtype: torch.dtype = torch.float16,
         verbose: bool = False,
         flux_device: torch.device | str = "cuda:0",
         ae_device: torch.device | str = "cuda:1",
@@ -87,10 +85,42 @@ class FluxPipeline:
         self.model: "Flux" = model
         self.ae: "AutoEncoder" = ae
         self.rng = torch.Generator(device="cpu")
-        self.turbojpeg = TurboImage()
+        self.img_encoder = ImageEncoder()
         self.verbose = verbose
         self.ae_dtype = torch.bfloat16
         self.config = config
+        self.offload_text_encoder = config.offload_text_encoder
+        self.offload_vae = config.offload_vae
+        self.offload_flow = config.offload_flow
+
+        if self.config.compile_blocks or self.config.compile_extras:
+            print("Warmups for compile...")
+            warmup_dict = dict(
+                prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
+                height=1024,
+                width=1024,
+                num_steps=30,
+                guidance=3.5,
+                seed=10,
+            )
+            self.generate(**warmup_dict)
+            to_gpu_extras = [
+                "vector_in",
+                "img_in",
+                "txt_in",
+                "time_in",
+                "guidance_in",
+                "final_layer",
+                "pe_embedder",
+            ]
+            if self.config.compile_blocks:
+                for block in self.model.double_blocks:
+                    block.compile()
+                for block in self.model.single_blocks:
+                    block.compile()
+            if self.config.compile_extras:
+                for extra in to_gpu_extras:
+                    getattr(self.model, extra).compile()
 
     @torch.inference_mode()
     def prepare(
@@ -126,6 +156,9 @@ class FluxPipeline:
         )
 
         img_ids = img_ids[None].repeat(bs, 1, 1, 1).flatten(1, 2)
+        if self.offload_text_encoder:
+            self.clip.to(self.device_clip)
+            self.t5.to(self.device_t5)
         vec, txt, txt_ids = get_weighted_text_embeddings_flux(
             self,
             prompt,
@@ -134,6 +167,10 @@ class FluxPipeline:
             target_device=target_device,
             target_dtype=target_dtype,
         )
+        if self.offload_text_encoder:
+            self.clip.to("cpu")
+            self.t5.to("cpu")
+            torch.cuda.empty_cache()
         return img, img_ids, vec, txt, txt_ids
 
     @torch.inference_mode()
@@ -196,29 +233,39 @@ class FluxPipeline:
     @torch.inference_mode()
     def into_bytes(self, x: torch.Tensor) -> io.BytesIO:
         # bring into PIL format and save
+        torch.cuda.synchronize()
+        x = x.contiguous()
         x = x.clamp(-1, 1)
         num_images = x.shape[0]
         images: List[torch.Tensor] = []
         for i in range(num_images):
-            x = x[i].permute(1, 2, 0).add(1.0).mul(127.5).type(torch.uint8).contiguous()
+            x = x[i].add(1.0).mul(127.5).clamp(0, 255).contiguous().type(torch.uint8)
             images.append(x)
         if len(images) == 1:
             im = images[0]
         else:
             im = torch.vstack(images)
 
-        im = self.turbojpeg.encode_torch(im, quality=95)
+        torch.cuda.synchronize()
+        im = self.turbojpeg.encode_torch(im, quality=99)
         images.clear()
         return io.BytesIO(im)
 
     @torch.inference_mode()
     def vae_decode(self, x: torch.Tensor, height: int, width: int) -> torch.Tensor:
-        x = x.to(self.device_ae)
+        if self.offload_vae:
+            self.ae.to(self.device_ae)
+            x = x.to(self.device_ae)
+        else:
+            x = x.to(self.device_ae)
         x = self.unpack(x.float(), height, width)
         with torch.autocast(
             device_type=self.device_ae.type, dtype=torch.bfloat16, cache_enabled=False
         ):
             x = self.ae.decode(x)
+        if self.offload_vae:
+            self.ae.to("cpu")
+            torch.cuda.empty_cache()
         return x
 
     def unpack(self, x: torch.Tensor, height: int, width: int) -> torch.Tensor:
@@ -269,11 +316,16 @@ class FluxPipeline:
                 dtype=torch.bfloat16,
                 cache_enabled=False,
             ):
+                if self.offload_vae:
+                    self.ae.to(self.device_ae)
                 init_image = (
                     self.ae.encode(init_image)
                     .to(dtype=self.dtype, device=self.device_flux)
                     .repeat(num_images, 1, 1, 1)
                 )
+                if self.offload_vae:
+                    self.ae.to("cpu")
+                    torch.cuda.empty_cache()
 
         x = self.get_noise(
             num_images,
@@ -338,11 +390,14 @@ class FluxPipeline:
             generator=generator,
             num_images=num_images,
         )
-        img, img_ids, vec, txt, txt_ids = self.prepare(
-            img=img,
-            prompt=prompt,
-            target_device=self.device_flux,
-            target_dtype=self.dtype,
+        img, img_ids, vec, txt, txt_ids = map(
+            lambda x: x.contiguous(),
+            self.prepare(
+                img=img,
+                prompt=prompt,
+                target_device=self.device_flux,
+                target_dtype=self.dtype,
+            ),
         )
 
         # this is ignored for schnell
@@ -350,6 +405,8 @@ class FluxPipeline:
             (img.shape[0],), guidance, device=self.device_flux, dtype=self.dtype
         )
         t_vec = None
+        if self.offload_flow:
+            self.model.to(self.device_flux)
         for t_curr, t_prev in tqdm(
             zip(timesteps[:-1], timesteps[1:]), total=len(timesteps) - 1, disable=silent
         ):
@@ -374,6 +431,8 @@ class FluxPipeline:
 
             img = img + (t_prev - t_curr) * pred
 
+        if self.offload_flow:
+            self.model.to("cpu")
         torch.cuda.empty_cache()
 
         # decode latents to pixel space
@@ -384,37 +443,35 @@ class FluxPipeline:
         return self.into_bytes(img)
 
     @classmethod
-    def load_pipeline_from_config_path(cls, path: str) -> "FluxPipeline":
+    def load_pipeline_from_config_path(
+        cls, path: str, flow_model_path: str = None
+    ) -> "FluxPipeline":
         with torch.inference_mode():
             config = load_config_from_path(path)
+            if flow_model_path:
+                config.ckpt_path = flow_model_path
             return cls.load_pipeline_from_config(config)
 
     @classmethod
     def load_pipeline_from_config(cls, config: ModelSpec) -> "FluxPipeline":
-        from quantize_swap_and_dispatch import quantize_and_dispatch_to_device
+        from float8_quantize import quantize_flow_transformer_and_dispatch_float8
 
         with torch.inference_mode():
             print("flow_quantization_dtype", config.flow_quantization_dtype)
 
             models = load_models_from_config(config)
             config = models.config
-            num_layers_to_quantize = config.num_to_quant
             flux_device = into_device(config.flux_device)
             ae_device = into_device(config.ae_device)
             clip_device = into_device(config.text_enc_device)
             t5_device = into_device(config.text_enc_device)
             flux_dtype = into_dtype(config.flow_dtype)
-            flow_model = models.flow
+            flow_model = models.flow.type(flux_dtype).to(
+                memory_format=torch.channels_last
+            )
 
-            flow_model = quantize_and_dispatch_to_device(
-                flow_model=flow_model,
-                flux_device=flux_device,
-                flux_dtype=flux_dtype,
-                num_layers_to_quantize=num_layers_to_quantize,
-                compile_extras=config.compile_extras,
-                compile_blocks=config.compile_blocks,
-                quantize_extras=config.quantize_extras,
-                quantization_dtype=config.flow_quantization_dtype,
+            flow_model = quantize_flow_transformer_and_dispatch_float8(
+                flow_model, flux_device
             )
 
         return cls(
@@ -435,29 +492,24 @@ class FluxPipeline:
 
 if __name__ == "__main__":
     pipe = FluxPipeline.load_pipeline_from_config_path(
-        "configs/config-dev-gigaquant.json"
+        "configs/config-dev-offload.json"
     )
     o = pipe.generate(
         prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
         height=1024,
-        width=1024,
+        width=576,
         num_steps=24,
-        guidance=3.0,
+        guidance=3.5,
+        seed=10,
     )
     open("out.jpg", "wb").write(o.read())
-    o = pipe.generate(
-        prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
-        height=1024,
-        width=1024,
-        num_steps=24,
-        guidance=3.0,
-    )
-    open("out2.jpg", "wb").write(o.read())
-    o = pipe.generate(
-        prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
-        height=1024,
-        width=1024,
-        num_steps=24,
-        guidance=3.0,
-    )
-    open("out3.jpg", "wb").write(o.read())
+    for x in range(10):
+
+        o = pipe.generate(
+            prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
+            height=1024,
+            width=576,
+            num_steps=24,
+            guidance=3.5,
+        )
+        open(f"out{x}.jpg", "wb").write(o.read())

@@ -50,6 +50,6 @@
   "flow_quantization_dtype": "qfloat8",
   "text_enc_quantization_dtype": "qfloat8",
   "num_to_quant": 22,
-  "compile_extras": true,
-  "compile_blocks": true
+  "compile_extras": false,
+  "compile_blocks": false
 }

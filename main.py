@@ -87,7 +87,9 @@ def main():
     args = parse_args()
 
     if args.config_path:
-        app.state.model = FluxPipeline.load_pipeline_from_config_path(args.config_path)
+        app.state.model = FluxPipeline.load_pipeline_from_config_path(
+            args.config_path, flow_model_path=args.flow_model_path
+        )
     else:
         model_version = (
             ModelVersion.flux_dev

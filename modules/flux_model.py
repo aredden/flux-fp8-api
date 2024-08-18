@@ -11,14 +11,13 @@ torch.set_float32_matmul_precision("high")
 import math
 
 from torch import Tensor, nn
-from torch._dynamo import config
-from torch._inductor import config as ind_config
 from pydantic import BaseModel
 from torch.nn import functional as F
 
-config.cache_size_limit = 10000000000
-ind_config.compile_threads = os.cpu_count()
-ind_config.shape_padding = True
+try:
+    from cublas_ops import CublasLinear
+except ImportError:
+    CublasLinear = nn.Linear
 
 
 class FluxParams(BaseModel):
@@ -37,7 +36,7 @@ class FluxParams(BaseModel):
 
 
 # attention is always same shape each time it's called per H*W, so compile with fullgraph
-@torch.compile(mode="reduce-overhead", fullgraph=True, disable=DISABLE_COMPILE)
+# @torch.compile(mode="reduce-overhead", fullgraph=True, disable=DISABLE_COMPILE)
 def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor) -> Tensor:
     q, k = apply_rope(q, k, pe)
     x = F.scaled_dot_product_attention(q, k, v).transpose(1, 2)
@@ -45,7 +44,7 @@ def attention(q: Tensor, k: Tensor, v: Tensor, pe: Tensor) -> Tensor:
     return x
 
 
-@torch.compile(mode="reduce-overhead", disable=DISABLE_COMPILE)
+# @torch.compile(mode="reduce-overhead", disable=DISABLE_COMPILE)
 def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
     scale = torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device) / dim
     omega = 1.0 / (theta**scale)
@@ -202,8 +201,7 @@ class DoubleStreamBlock(nn.Module):
         num_heads: int,
         mlp_ratio: float,
         qkv_bias: bool = False,
-        dtype: torch.dtype = torch.bfloat16,
-        idx: int = 0,
+        dtype: torch.dtype = torch.float16,
     ):
         super().__init__()
         self.dtype = dtype
@@ -232,9 +230,9 @@ class DoubleStreamBlock(nn.Module):
 
         self.txt_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.txt_mlp = nn.Sequential(
-            (nn.Linear(hidden_size, mlp_hidden_dim, bias=True)),
+            nn.Linear(hidden_size, mlp_hidden_dim, bias=True),
             nn.GELU(approximate="tanh"),
-            (nn.Linear(mlp_hidden_dim, hidden_size, bias=True)),
+            nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
         )
         self.K = 3
         self.H = self.num_heads
@@ -279,13 +277,13 @@ class DoubleStreamBlock(nn.Module):
         img = img + img_mod1.gate * self.img_attn.proj(img_attn)
         img = img + img_mod2.gate * self.img_mlp(
             (1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift
-        ).clamp(min=-384, max=384)
+        ).clamp(min=-384 * 2, max=384 * 2)
 
         # calculate the txt bloks
         txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
         txt = txt + txt_mod2.gate * self.txt_mlp(
             (1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift
-        ).clamp(min=-384, max=384)
+        ).clamp(min=-384 * 2, max=384 * 2)
 
         return img, txt
 
@@ -302,7 +300,7 @@ class SingleStreamBlock(nn.Module):
         num_heads: int,
         mlp_ratio: float = 4.0,
         qk_scale: float | None = None,
-        dtype: torch.dtype = torch.bfloat16,
+        dtype: torch.dtype = torch.float16,
     ):
         super().__init__()
         self.dtype = dtype
@@ -343,7 +341,7 @@ class SingleStreamBlock(nn.Module):
         q, k = self.norm(q, k, v)
         attn = attention(q, k, v, pe=pe)
         output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2)).clamp(
-            min=-384, max=384
+            min=-384 * 4, max=384 * 4
         )
         return x + mod.gate * output
 
@@ -352,11 +350,11 @@ class LastLayer(nn.Module):
     def __init__(self, hidden_size: int, patch_size: int, out_channels: int):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(
+        self.linear = CublasLinear(
             hidden_size, patch_size * patch_size * out_channels, bias=True
         )
         self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True)
+            nn.SiLU(), CublasLinear(hidden_size, 2 * hidden_size, bias=True)
         )
 
     def forward(self, x: Tensor, vec: Tensor) -> Tensor:
@@ -413,9 +411,8 @@ class Flux(nn.Module):
                     mlp_ratio=params.mlp_ratio,
                     qkv_bias=params.qkv_bias,
                     dtype=self.dtype,
-                    idx=idx,
                 )
-                for idx in range(params.depth)
+                for _ in range(params.depth)
             ]
         )
 

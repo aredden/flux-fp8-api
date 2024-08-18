@@ -50,6 +50,9 @@ class ModelSpec(BaseModel):
     text_enc_quantization_dtype: Optional[QuantizationDtype] = QuantizationDtype.qfloat8
     ae_quantization_dtype: Optional[QuantizationDtype] = None
     clip_quantization_dtype: Optional[QuantizationDtype] = None
+    offload_text_encoder: bool = False
+    offload_vae: bool = False
+    offload_flow: bool = False
 
     model_config: ConfigDict = {
         "arbitrary_types_allowed": True,
@@ -242,6 +245,9 @@ def load_autoencoder(config: ModelSpec) -> AutoEncoder:
             current_quants=0,
             quantization_dtype=into_qtype(config.ae_quantization_dtype),
         )
+        if config.offload_vae:
+            ae.to("cpu")
+            torch.cuda.empty_cache()
     return ae
 
 
