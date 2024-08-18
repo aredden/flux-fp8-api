@@ -103,16 +103,56 @@ Example configuration file (`configs/config-dev.json`):
     "repo_flow": "flux1-dev.sft",
     "repo_ae": "ae.sft",
     "text_enc_max_length": 512,
-    "text_enc_path": "path/to/your/t5-v1_1-xxl-encoder-bf16", // or "city96/t5-v1_1-xxl-encoder-bf16" for a simple to download version
+    "text_enc_path": "path/to/your/t5-v1_1-xxl-encoder-bf16",
     "text_enc_device": "cuda:1",
     "ae_device": "cuda:1",
     "flux_device": "cuda:0",
     "flow_dtype": "float16",
     "ae_dtype": "bfloat16",
     "text_enc_dtype": "bfloat16",
-    "num_to_quant": 20
+    "text_enc_quantization_dtype": "qfloat8",
+    "compile_extras": true,
+    "compile_blocks": true,
+    ...
 }
 ```
+
+The only things you should need to change in general are the:
+
+```json5
+    "ckpt_path": "/path/to/your/flux1-dev.sft", // path to your original BFL flow transformer (not diffusers)
+    "ae_path": "/path/to/your/ae.sft", // path to your original BFL autoencoder (not diffusers)
+    "text_enc_path": "path/to/your/t5-v1_1-xxl-encoder-bf16", // HF T5EncoderModel - can use "city96/t5-v1_1-xxl-encoder-bf16" for a simple to download version
+```
+
+Other things to change can be the
+
+-   `"text_enc_quantization_dtype": "qfloat8"`
+    quantization dtype for the text encoder, if `qfloat8` or `qint2` will use quanto, `qint4`, `qint8` will use bitsandbytes
+
+-   `"compile_extras": true,`
+    compiles all modules that are not the single-blocks or double-blocks (default: false)
+
+-   `"compile_blocks": true,`
+    compiles all single-blocks and double-blocks (default: false)
+
+-   `"text_enc_offload": false,`
+    offload text encoder to cpu (default: false) - set to true if you only have a single 4090 and no other GPUs, otherwise you can set this to false and reduce latency [NOTE: this will be slow, if you have multiple GPUs, change the text_enc_device to a different device so you can set offloading for text_enc to false]
+
+-   `"ae_offload": false,`
+    offload autoencoder to cpu (default: false) - set to true if you only have a single 4090 and no other GPUs, otherwise you can set this to false and reduce latency [NOTE: this will be slow, if you have multiple GPUs, change the ae_device to a different device so you can set offloading for ae to false]
+
+-   `"flux_offload": false,`
+    offload flow transformer to cpu (default: false) - set to true if you only have a single 4090 and no other GPUs, otherwise you can set this to false and reduce latency [NOTE: this will be slow, if you have multiple GPUs, change the flux_device to a different device so you can set offloading for flux to false]
+
+-   `"flux_device": "cuda:0",`
+    device for flow transformer (default: cuda:0) - this gpu must have fp8 support and at least 16GB of memory, does not need to be the same as text_enc_device or ae_device
+
+-   `"text_enc_device": "cuda:0",`
+    device for text encoder (default: cuda:0) - set this to a different device - e.g. `"cuda:1"` if you have multiple gpus so you can set offloading for text_enc to false, does not need to be the same as flux_device or ae_device
+
+-   `"ae_device": "cuda:0",`
+    device for autoencoder (default: cuda:0) - set this to a different device - e.g. `"cuda:1"` if you have multiple gpus so you can set offloading for ae to false, does not need to be the same as flux_device or text_enc_device
 
 ## API Endpoints
 
@@ -128,6 +168,8 @@ Example configuration file (`configs/config-dev.json`):
     -   `num_steps` (int, optional): The number of steps for the generation process (default: 24).
     -   `guidance` (float, optional): The guidance scale for the generation process (default: 3.5).
     -   `seed` (int, optional): The seed for random number generation.
+    -   `init_image` (str, optional): The base64 encoded image to be used as a reference for the generation process.
+    -   `strength` (float, optional): The strength of the diffusion process when image is provided (default: 1.0).
 
 -   **Response**: A JPEG image stream.
 
