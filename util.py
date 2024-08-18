@@ -211,6 +211,8 @@ def load_flow_model(config: ModelSpec) -> Flux:
         sd = load_sft(ckpt_path, device="cpu")
         missing, unexpected = model.load_state_dict(sd, strict=False, assign=True)
         print_load_warning(missing, unexpected)
+        if not config.prequantized_flow:
+            model.type(into_dtype(config.flow_dtype))
     return model
 
 

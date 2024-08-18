@@ -369,7 +369,7 @@ class Flux(nn.Module):
     Transformer model for flow matching on sequences.
     """
 
-    def __init__(self, params: FluxParams, dtype: torch.dtype = torch.bfloat16):
+    def __init__(self, params: FluxParams, dtype: torch.dtype = torch.float16):
         super().__init__()
 
         self.dtype = dtype
