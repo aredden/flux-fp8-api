@@ -54,7 +54,7 @@ def test_real_img():
     img_hwc = torch.from_numpy(im).cuda().type(torch.float32)
     img_chw = img_hwc.permute(2, 0, 1).contiguous()
     img_gray = img_hwc.mean(dim=2, keepdim=False).contiguous().clamp(0, 255)
-    tj = TurboImage()
+    tj = ImageEncoder()
     o = tj.encode_torch(img_chw)
     o2 = tj.encode_torch(img_hwc)
     o3 = tj.encode_torch(img_gray)
@@ -64,7 +64,6 @@ def test_real_img():
         f.write(o)
     with open("out_gray.jpg", "wb") as f:
         f.write(o3)
-    # print(o)
 
 
 if __name__ == "__main__":

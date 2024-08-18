@@ -236,18 +236,13 @@ def load_autoencoder(config: ModelSpec) -> AutoEncoder:
         missing, unexpected = ae.load_state_dict(sd, strict=False, assign=True)
         print_load_warning(missing, unexpected)
     if config.ae_quantization_dtype is not None:
-        from quantize_swap_and_dispatch import _full_quant, into_qtype
-
         ae.to(into_device(config.ae_device))
-        _full_quant(
-            ae,
-            max_quants=8000,
-            current_quants=0,
-            quantization_dtype=into_qtype(config.ae_quantization_dtype),
-        )
-        if config.offload_vae:
-            ae.to("cpu")
-            torch.cuda.empty_cache()
+        from float8_quantize import recursive_swap_linears
+
+        recursive_swap_linears(ae)
+    if config.offload_vae:
+        ae.to("cpu")
+        torch.cuda.empty_cache()
     return ae
 
 

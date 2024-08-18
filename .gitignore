@@ -10,3 +10,7 @@ __pycache__
 *.mp3
 *.txt
 .copilotignore
+.misc
+BFL-flux-diffusers
+.env
+.env.*

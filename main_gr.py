@@ -1,7 +1,7 @@
 import torch
 
 from flux_pipeline import FluxPipeline
-import gradio as gr
+import gradio as gr  # type: ignore
 from PIL import Image
 
 
