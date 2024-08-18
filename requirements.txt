@@ -5,8 +5,11 @@ PyTurboJPEG
 pydantic
 fastapi
 bitsandbytes
-xformers
 loguru
 transformers
 tokenizers
 sentencepiece
+click
+accelerate
+quanto
+pydash
