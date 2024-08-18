@@ -1,4 +1,4 @@
-# Flux FP16 Accumulate Model Implementation with FastAPI
+# Flux FP8 (true) Matmul Implementation with FastAPI
 
 This repository contains an implementation of the Flux model, along with an API that allows you to generate images based on text prompts. The API can be run via command-line arguments.
 
@@ -13,11 +13,33 @@ This repository contains an implementation of the Flux model, along with an API 
 
 ## Installation
 
+This repo _requires_ at least pytorch with cuda=12.4 and an ADA gpu with fp8 support, otherwise `torch._scaled_mm` will throw a CUDA error saying it's not supported. To install with conda/mamba:
+
+```bash
+mamba create -n flux-fp8-matmul-api python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+mamba activate flux-fp8-matmul-api
+
+# or with conda
+conda create -n flux-fp8-matmul-api python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia
+conda activate flux-fp8-matmul-api
+
+# or with nightly... (which is what I am using) - also, just switch 'mamba' to 'conda' if you are using conda
+mamba create -n flux-fp8-matmul-api python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch-nightly -c nvidia
+mamba activate flux-fp8-matmul-api
+
+# or with pip
+python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# or pip nightly
+python -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu124
+```
+
 To install the required dependencies, run:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
+
+If you get errors installing `torch-cublas-hgemm`, feel free to comment it out in requirements.txt, since it's not necessary, but will speed up inference for non-fp8 linear layers.
 
 ## Usage
 

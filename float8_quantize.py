@@ -9,8 +9,21 @@ from torchao.float8.float8_utils import (
 from torch.nn import init
 import math
 from torch.compiler import is_compiling
+from torch import __version__
+from torch.version import cuda
 
-
+IS_TORCH_2_4 = __version__ >= (2, 4) and __version__ < (2, 5)
+LT_TORCH_2_4 = __version__ < (2, 4)
+if LT_TORCH_2_4:
+    if not hasattr(torch, "_scaled_mm"):
+        raise RuntimeError(
+            "This version of PyTorch is not supported. Please upgrade to PyTorch 2.4 with CUDA 12.4 or later."
+        )
+CUDA_VERSION = float(cuda) if cuda else 0
+if CUDA_VERSION < 12.4:
+    raise RuntimeError(
+        f"This version of PyTorch is not supported. Please upgrade to PyTorch 2.4 with CUDA 12.4 or later got torch version {__version__} and CUDA version {cuda}."
+    )
 try:
     from cublas_ops import CublasLinear
 except ImportError:
@@ -244,19 +257,22 @@ class F8Linear(nn.Module):
             x = self.quantize_input(x)
 
         prev_dims = x.shape[:-1]
-
         x = x.view(-1, self.in_features)
 
         # float8 matmul, much faster than float16 matmul w/ float32 accumulate on ADA devices!
-        return torch._scaled_mm(
+        out = torch._scaled_mm(
             x,
             self.float8_data.T,
-            self.input_scale_reciprocal,
-            self.scale_reciprocal,
+            scale_a=self.input_scale_reciprocal,
+            scale_b=self.scale_reciprocal,
             bias=self.bias,
             out_dtype=self.weight.dtype,
             use_fast_accum=True,
-        ).view(*prev_dims, self.out_features)
+        )
+        if IS_TORCH_2_4:
+            out = out[0]
+        out = out.view(*prev_dims, self.out_features)
+        return out
 
     @classmethod
     def from_linear(
