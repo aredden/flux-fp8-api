@@ -16,7 +16,7 @@
     ],
     "theta": 10000,
     "qkv_bias": true,
-    "guidance_embed": true
+    "guidance_embed": false
   },
   "ae_params": {
     "resolution": 256,
@@ -47,5 +47,11 @@
   "flow_dtype": "float16",
   "ae_dtype": "bfloat16",
   "text_enc_dtype": "bfloat16",
-  "num_to_quant": 20
+  "text_enc_quantization_dtype": "qfloat8",
+  "ae_quantization_dtype": "qfloat8",
+  "compile_extras": false,
+  "compile_blocks": false,
+  "offload_ae": false,
+  "offload_text_enc": false,
+  "offload_flow": false
 }

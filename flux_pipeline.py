@@ -165,8 +165,8 @@ class FluxPipeline:
 
         img_ids = img_ids[None].repeat(bs, 1, 1, 1).flatten(1, 2)
         if self.offload_text_encoder:
-            self.clip.to(self.device_clip)
-            self.t5.to(self.device_t5)
+            self.clip.cuda(self.device_clip)
+            self.t5.cuda(self.device_t5)
         vec, txt, txt_ids = get_weighted_text_embeddings_flux(
             self,
             prompt,
@@ -498,28 +498,3 @@ class FluxPipeline:
             t5_device=t5_device,
             config=config,
         )
-
-
-if __name__ == "__main__":
-    pipe = FluxPipeline.load_pipeline_from_config_path(
-        "configs/config-dev-prequant.json",
-    )
-    o = pipe.generate(
-        prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
-        height=1024,
-        width=576,
-        num_steps=24,
-        guidance=3.5,
-        seed=10,
-    )
-    open("out.jpg", "wb").write(o.read())
-    for x in range(2):
-
-        o = pipe.generate(
-            prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
-            height=1024,
-            width=576,
-            num_steps=24,
-            guidance=3.5,
-        )
-        open(f"out{x}.jpg", "wb").write(o.read())

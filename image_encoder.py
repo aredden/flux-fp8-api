@@ -42,29 +42,3 @@ class ImageEncoder:
         im.save(iob, format="JPEG", quality=95)
         iob.seek(0)
         return iob.getvalue()
-
-
-def test_real_img():
-    from PIL import Image
-    import numpy as np
-
-    im = "out.jpg"
-    im = Image.open(im)
-    im = np.array(im)
-    img_hwc = torch.from_numpy(im).cuda().type(torch.float32)
-    img_chw = img_hwc.permute(2, 0, 1).contiguous()
-    img_gray = img_hwc.mean(dim=2, keepdim=False).contiguous().clamp(0, 255)
-    tj = ImageEncoder()
-    o = tj.encode_torch(img_chw)
-    o2 = tj.encode_torch(img_hwc)
-    o3 = tj.encode_torch(img_gray)
-    with open("out_chw.jpg", "wb") as f:
-        f.write(o2)
-    with open("out_hwc.jpg", "wb") as f:
-        f.write(o)
-    with open("out_gray.jpg", "wb") as f:
-        f.write(o3)
-
-
-if __name__ == "__main__":
-    test_real_img()

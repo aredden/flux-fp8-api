@@ -49,7 +49,9 @@
   "text_enc_dtype": "bfloat16",
   "flow_quantization_dtype": "qfloat8",
   "text_enc_quantization_dtype": "qfloat8",
-  "num_to_quant": 22,
   "compile_extras": false,
-  "compile_blocks": false
+  "compile_blocks": false,
+  "offload_ae": false,
+  "offload_text_enc": false,
+  "offload_flow": false
 }

@@ -12,7 +12,7 @@ from torch.compiler import is_compiling
 from torch import __version__
 from torch.version import cuda
 
-IS_TORCH_2_4 = __version__ >= (2, 4) and __version__ < (2, 4, 9)
+IS_TORCH_2_4 = __version__ < (2, 4, 9)
 LT_TORCH_2_4 = __version__ < (2, 4)
 if LT_TORCH_2_4:
     if not hasattr(torch, "_scaled_mm"):

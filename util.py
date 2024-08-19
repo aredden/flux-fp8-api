@@ -290,25 +290,3 @@ def load_models_from_config(config: ModelSpec) -> LoadedModels:
         t5=t5,
         config=config,
     )
-
-
-if __name__ == "__main__":
-    p = "/big/generator-ui/flux-testing/flux/model-dir/flux1-dev.sft"
-    ae_p = "/big/generator-ui/flux-testing/flux/model-dir/ae.sft"
-
-    config = load_config(
-        ModelVersion.flux_dev,
-        flux_path=p,
-        ae_path=ae_p,
-        text_enc_path="city96/t5-v1_1-xxl-encoder-bf16",
-        text_enc_device="cuda:0",
-        ae_device="cuda:0",
-        flux_device="cuda:0",
-        flow_dtype="float16",
-        ae_dtype="bfloat16",
-        text_enc_dtype="bfloat16",
-        num_to_quant=20,
-    )
-    with open("configs/config-dev-cuda0.json", "w") as f:
-        json.dump(config.model_dump(), f, indent=2)
-    print(config)
