@@ -14,19 +14,6 @@ from transformers.utils.quantization_config import QuantoConfig, BitsAndBytesCon
 CACHE_DIR = os.environ.get("HF_HOME", "~/.cache/huggingface")
 
 
-def into_quantization_name(quantization_dtype: str) -> str:
-    if quantization_dtype == "qfloat8":
-        return "float8"
-    elif quantization_dtype == "qint4":
-        return "int4"
-    elif quantization_dtype == "qint8":
-        return "int8"
-    elif quantization_dtype == "qint2":
-        return "int2"
-    else:
-        raise ValueError(f"Unsupported quantization dtype: {quantization_dtype}")
-
-
 def auto_quantization_config(
     quantization_dtype: str,
 ) -> QuantoConfig | BitsAndBytesConfig:

@@ -1,4 +1,3 @@
-from typing import Any, Mapping
 import torch
 import torch.nn as nn
 from torchao.float8.float8_utils import (
@@ -11,6 +10,7 @@ import math
 from torch.compiler import is_compiling
 from torch import __version__
 from torch.version import cuda
+from typing import TypeVar
 
 IS_TORCH_2_4 = __version__ < (2, 4, 9)
 LT_TORCH_2_4 = __version__ < (2, 4)
@@ -29,23 +29,7 @@ try:
 except ImportError:
     CublasLinear = type(None)
 
-
-def check_scale_tensor(tensor):
-    return (
-        tensor is not None
-        and isinstance(tensor, torch.Tensor)
-        and tensor.dtype == torch.float32
-        and tensor.numel() == 1
-        and tensor != torch.zeros_like(tensor)
-    )
-
-
-def check_scale_in_state_dict(state_dict, key):
-    return key in state_dict and check_scale_tensor(state_dict[key])
-
-
-def check_scales_given_state_dict_and_keys(state_dict, keys):
-    return all(check_scale_in_state_dict(state_dict, key) for key in keys)
+FluxType = TypeVar("FluxType", nn.Module)
 
 
 class F8Linear(nn.Module):
@@ -245,6 +229,7 @@ class F8Linear(nn.Module):
             init.uniform_(self.bias, -bound, bound)
         self.quantize_weight()
         self.max_value = torch.finfo(self.float8_dtype).max
+        self.input_max_value = torch.finfo(self.input_float8_dtype).max
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.input_scale_initialized or is_compiling():
@@ -280,7 +265,7 @@ class F8Linear(nn.Module):
         linear: nn.Linear,
         float8_dtype=torch.float8_e4m3fn,
         input_float8_dtype=torch.float8_e5m2,
-    ):
+    ) -> "F8Linear":
         f8_lin = cls(
             in_features=linear.in_features,
             out_features=linear.out_features,
@@ -300,7 +285,7 @@ def recursive_swap_linears(
     model: nn.Module,
     float8_dtype=torch.float8_e4m3fn,
     input_float8_dtype=torch.float8_e5m2,
-):
+) -> None:
     """
     Recursively swaps all nn.Linear modules in the given model with F8Linear modules.
 
@@ -337,23 +322,29 @@ def recursive_swap_linears(
 
 @torch.inference_mode()
 def quantize_flow_transformer_and_dispatch_float8(
-    flow_model: nn.Module,
+    flow_model: FluxType,
     device=torch.device("cuda"),
     float8_dtype=torch.float8_e4m3fn,
     input_float8_dtype=torch.float8_e5m2,
     offload_flow=False,
-):
+) -> FluxType:
     """
     Quantize the flux flow transformer model (original BFL codebase version) and dispatch to the given device.
+
+    Iteratively pushes each module to device, evals, replaces linear layers with F8Linear except for final_layer, and quantizes.
+
+    Allows for fast dispatch to gpu & quantize without causing OOM on gpus with limited memory.
+
+    After dispatching, if offload_flow is True, offloads the model to cpu.
     """
-    for i, module in enumerate(flow_model.double_blocks):
+    for module in flow_model.double_blocks:
         module.to(device)
         module.eval()
         recursive_swap_linears(
             module, float8_dtype=float8_dtype, input_float8_dtype=input_float8_dtype
         )
         torch.cuda.empty_cache()
-    for i, module in enumerate(flow_model.single_blocks):
+    for module in flow_model.single_blocks:
         module.to(device)
         module.eval()
         recursive_swap_linears(

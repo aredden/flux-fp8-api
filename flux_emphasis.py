@@ -111,7 +111,9 @@ def parse_prompt_attention(text):
     return res
 
 
-def get_prompts_tokens_with_weights(clip_tokenizer: CLIPTokenizer, prompt: str):
+def get_prompts_tokens_with_weights(
+    clip_tokenizer: CLIPTokenizer, prompt: str, debug: bool = False
+):
     """
     Get prompt token ids and weights, this function works for both prompt and negative prompt
 
@@ -152,13 +154,14 @@ def get_prompts_tokens_with_weights(clip_tokenizer: CLIPTokenizer, prompt: str):
         ).input_ids
         # so that tokenize whatever length prompt
         # the returned token is a 1d list: [320, 1125, 539, 320]
-        print(
-            token,
-            "|FOR MODEL LEN{}|".format(maxlen),
-            clip_tokenizer.decode(
-                token, skip_special_tokens=True, clean_up_tokenization_spaces=True
-            ),
-        )
+        if debug:
+            print(
+                token,
+                "|FOR MODEL LEN{}|".format(maxlen),
+                clip_tokenizer.decode(
+                    token, skip_special_tokens=True, clean_up_tokenization_spaces=True
+                ),
+            )
         # merge the new tokens to the all tokens holder: text_tokens
         text_tokens = [*text_tokens, *token]
 
@@ -306,6 +309,7 @@ def get_weighted_text_embeddings_flux(
     device: Optional[torch.device] = None,
     target_device: Optional[torch.device] = torch.device("cuda:0"),
     target_dtype: Optional[torch.dtype] = torch.bfloat16,
+    debug: bool = False,
 ):
     """
     This function can process long prompt with weights, no length limitation
@@ -350,12 +354,12 @@ def get_weighted_text_embeddings_flux(
 
     # tokenizer 1
     prompt_tokens_clip, prompt_weights_clip = get_prompts_tokens_with_weights(
-        tokenizer_clip, prompt
+        tokenizer_clip, prompt, debug=debug
     )
 
     # tokenizer 2
     prompt_tokens_t5, prompt_weights_t5 = get_prompts_tokens_with_weights(
-        tokenizer_t5, prompt
+        tokenizer_t5, prompt, debug=debug
     )
 
     prompt_tokens_clip_grouped, prompt_weights_clip_grouped = group_tokens_and_weights(
@@ -428,7 +432,8 @@ def get_weighted_text_embeddings_flux(
         "last_hidden_state"
     ]
     t5_embeds = apply_weights(prompt_tokens_t5, weight_tensor_t5, t5_embeds, eos_2)
-    print(t5_embeds.shape)
+    if debug:
+        print(t5_embeds.shape)
     if t5_embeds.shape[0] == 1 and num_images_per_prompt > 1:
         t5_embeds = repeat(t5_embeds, "1 ... -> bs ...", bs=num_images_per_prompt)
     txt_ids = torch.zeros(

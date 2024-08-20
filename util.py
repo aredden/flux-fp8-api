@@ -42,6 +42,7 @@ class ModelSpec(BaseModel):
     flow_dtype: str = "float16"
     ae_dtype: str = "bfloat16"
     text_enc_dtype: str = "bfloat16"
+    # unused / deprecated
     num_to_quant: Optional[int] = 20
     quantize_extras: bool = False
     compile_extras: bool = False

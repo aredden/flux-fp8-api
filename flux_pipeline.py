@@ -3,7 +3,11 @@ import math
 from typing import TYPE_CHECKING, Callable, List
 from PIL import Image
 import numpy as np
+import warnings
 
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 import torch
 
 from einops import rearrange
@@ -61,6 +65,7 @@ class FluxPipeline:
         clip_device: torch.device | str = "cuda:1",
         t5_device: torch.device | str = "cuda:1",
         config: ModelSpec = None,
+        debug: bool = False,
     ):
         """
         Initialize the FluxPipeline class.
@@ -68,6 +73,7 @@ class FluxPipeline:
         This class is responsible for preparing input tensors for the Flux model, generating
         timesteps and noise, and handling device management for model offloading.
         """
+        self.debug = debug
         self.name = name
         self.device_flux = (
             flux_device
@@ -113,7 +119,7 @@ class FluxPipeline:
 
         if self.config.compile_blocks or self.config.compile_extras:
             if not self.config.prequantized_flow:
-                print("Warmups for compile...")
+                logger.info("Running warmups for compile...")
                 warmup_dict = dict(
                     prompt="A beautiful test image used to solidify the fp8 nn.Linear input scales prior to compilation 😉",
                     height=768,
@@ -204,6 +210,8 @@ class FluxPipeline:
         if self.offload_text_encoder:
             self.clip.to(device=self.device_clip)
             self.t5.to(device=self.device_t5)
+
+        # get the text embeddings
         vec, txt, txt_ids = get_weighted_text_embeddings_flux(
             self,
             prompt,
@@ -211,7 +219,9 @@ class FluxPipeline:
             device=self.device_clip,
             target_device=target_device,
             target_dtype=target_dtype,
+            debug=self.debug,
         )
+        # offload text encoder to cpu if needed
         if self.offload_text_encoder:
             self.clip.to("cpu")
             self.t5.to("cpu")
@@ -494,6 +504,8 @@ class FluxPipeline:
         logger.info(f"Generating with:\nSeed: {seed}\nPrompt: {prompt}")
 
         generator = torch.Generator(device=self.device_flux).manual_seed(seed)
+
+        # preprocess the latent
         img, timesteps = self.preprocess_latent(
             init_image=init_image,
             height=height,
@@ -503,6 +515,8 @@ class FluxPipeline:
             generator=generator,
             num_images=num_images,
         )
+
+        # prepare inputs
         img, img_ids, vec, txt, txt_ids = map(
             lambda x: x.contiguous(),
             self.prepare(
@@ -518,8 +532,11 @@ class FluxPipeline:
             (img.shape[0],), guidance, device=self.device_flux, dtype=self.dtype
         )
         t_vec = None
+        # dispatch to gpu if offloaded
         if self.offload_flow:
             self.model.to(self.device_flux)
+
+        # perform the denoising loop
         for t_curr, t_prev in tqdm(
             zip(timesteps[:-1], timesteps[1:]), total=len(timesteps) - 1, disable=silent
         ):
@@ -532,6 +549,7 @@ class FluxPipeline:
                 )
             else:
                 t_vec = t_vec.reshape((img.shape[0],)).fill_(t_curr)
+
             pred = self.model.forward(
                 img=img,
                 img_ids=img_ids,
@@ -544,6 +562,7 @@ class FluxPipeline:
 
             img = img + (t_prev - t_curr) * pred
 
+        # offload the model to cpu if needed
         if self.offload_flow:
             self.model.to("cpu")
         torch.cuda.empty_cache()
@@ -557,16 +576,18 @@ class FluxPipeline:
 
     @classmethod
     def load_pipeline_from_config_path(
-        cls, path: str, flow_model_path: str = None
+        cls, path: str, flow_model_path: str = None, debug: bool = False
     ) -> "FluxPipeline":
         with torch.inference_mode():
             config = load_config_from_path(path)
             if flow_model_path:
                 config.ckpt_path = flow_model_path
-            return cls.load_pipeline_from_config(config)
+            return cls.load_pipeline_from_config(config, debug=debug)
 
     @classmethod
-    def load_pipeline_from_config(cls, config: ModelSpec) -> "FluxPipeline":
+    def load_pipeline_from_config(
+        cls, config: ModelSpec, debug: bool = False
+    ) -> "FluxPipeline":
         from float8_quantize import quantize_flow_transformer_and_dispatch_float8
 
         with torch.inference_mode():
@@ -603,4 +624,5 @@ class FluxPipeline:
             clip_device=clip_device,
             t5_device=t5_device,
             config=config,
+            debug=debug,
         )
