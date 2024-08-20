@@ -103,8 +103,8 @@ python main.py --config-path <path_to_config> --port <port_number> --host <host_
 -   `--quant-text-enc`: Quantize the T5 text encoder to the given dtype (`qint4`, `qfloat8`, `qint2`, `qint8`, `bf16`), if `bf16`, will not quantize (default: `qfloat8`).
 -   `--quant-ae`: Quantize the autoencoder with float8 linear layers, otherwise will use bfloat16 (default: False).
 -   `--offload-flow`: Offload the flow model to the CPU when not being used to save memory (default: False).
--   `--no-offload-ae`: Disable offloading the autoencoder to the CPU when not being used to increase e2e inference speed (default: True).
--   `--no-offload-text-enc`: Disable offloading the text encoder to the CPU when not being used to increase e2e inference speed (default: True).
+-   `--no-offload-ae`: Disable offloading the autoencoder to the CPU when not being used to increase e2e inference speed (default: True [implies it will offload, setting this flag sets it to False]).
+-   `--no-offload-text-enc`: Disable offloading the text encoder to the CPU when not being used to increase e2e inference speed (default: True [implies it will offload, setting this flag sets it to False]).
 -   `--prequantized-flow`: Load the flow model from a prequantized checkpoint, which reduces the size of the checkpoint by about 50% & reduces startup time (default: False).
 
 ## Examples
