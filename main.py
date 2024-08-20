@@ -1,8 +1,6 @@
 import argparse
 import uvicorn
 from api import app
-from flux_pipeline import FluxPipeline
-from util import load_config, ModelVersion
 
 
 def parse_args():
@@ -79,12 +77,67 @@ def parse_args():
         default=False,
         help="Compile the flow model with extra optimizations",
     )
-
+    parser.add_argument(
+        "-qT",
+        "--quant-text-enc",
+        type=str,
+        default="qfloat8",
+        choices=["qint4", "qfloat8", "qint2", "qint8", "bf16"],
+        help="Quantize the t5 text encoder to the given dtype, if bf16, will not quantize",
+        dest="quant_text_enc",
+    )
+    parser.add_argument(
+        "-qA",
+        "--quant-ae",
+        action="store_true",
+        default=False,
+        help="Quantize the autoencoder with float8 linear layers, otherwise will use bfloat16",
+        dest="quant_ae",
+    )
+    parser.add_argument(
+        "-OF",
+        "--offload-flow",
+        action="store_true",
+        default=False,
+        dest="offload_flow",
+        help="Offload the flow model to the CPU when not being used to save memory",
+    )
+    parser.add_argument(
+        "-OA",
+        "--no-offload-ae",
+        action="store_false",
+        default=True,
+        dest="offload_ae",
+        help="Disable offloading the autoencoder to the CPU when not being used to increase e2e inference speed",
+    )
+    parser.add_argument(
+        "-OT",
+        "--no-offload-text-enc",
+        action="store_false",
+        default=True,
+        dest="offload_text_enc",
+        help="Disable offloading the text encoder to the CPU when not being used to increase e2e inference speed",
+    )
+    parser.add_argument(
+        "-PF",
+        "--prequantized-flow",
+        action="store_true",
+        default=False,
+        dest="prequantized_flow",
+        help="Load the flow model from a prequantized checkpoint "
+        + "(requires loading the flow model, running a minimum of 24 steps, "
+        + "and then saving the state_dict as a safetensors file), "
+        + "which reduces the size of the checkpoint by about 50% & reduces startup time",
+    )
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
+
+    # lazy loading so cli returns fast instead of waiting for torch to load modules
+    from flux_pipeline import FluxPipeline
+    from util import load_config, ModelVersion
 
     if args.config_path:
         app.state.model = FluxPipeline.load_pipeline_from_config_path(
@@ -110,6 +163,14 @@ def main():
             num_to_quant=args.num_to_quant,
             compile_extras=args.compile,
             compile_blocks=args.compile,
+            quant_text_enc=(
+                None if args.quant_text_enc == "bf16" else args.quant_text_enc
+            ),
+            quant_ae=args.quant_ae,
+            offload_flow=args.offload_flow,
+            offload_ae=args.offload_ae,
+            offload_text_enc=args.offload_text_enc,
+            prequantized_flow=args.prequantized_flow,
         )
         app.state.model = FluxPipeline.load_pipeline_from_config(config)
 

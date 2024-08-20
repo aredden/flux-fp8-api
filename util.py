@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 from modules.autoencoder import AutoEncoder, AutoEncoderParams
@@ -113,7 +113,16 @@ def load_config(
     num_to_quant: Optional[int] = 20,
     compile_extras: bool = False,
     compile_blocks: bool = False,
-):
+    offload_text_enc: bool = False,
+    offload_ae: bool = False,
+    offload_flow: bool = False,
+    quant_text_enc: Optional[Literal["float8", "qint2", "qint4", "qint8"]] = None,
+    quant_ae: bool = False,
+    prequantized_flow: bool = False,
+) -> ModelSpec:
+    """
+    Load a model configuration using the passed arguments.
+    """
     text_enc_device = str(parse_device(text_enc_device))
     ae_device = str(parse_device(ae_device))
     flux_device = str(parse_device(flux_device))
@@ -166,6 +175,17 @@ def load_config(
         num_to_quant=num_to_quant,
         compile_extras=compile_extras,
         compile_blocks=compile_blocks,
+        offload_flow=offload_flow,
+        offload_text_encoder=offload_text_enc,
+        offload_vae=offload_ae,
+        text_enc_quantization_dtype={
+            "float8": QuantizationDtype.qfloat8,
+            "qint2": QuantizationDtype.qint2,
+            "qint4": QuantizationDtype.qint4,
+            "qint8": QuantizationDtype.qint8,
+        }.get(quant_text_enc, None),
+        ae_quantization_dtype=QuantizationDtype.qfloat8 if quant_ae else None,
+        prequantized_flow=prequantized_flow,
     )
 
 
@@ -193,12 +213,10 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
         )
 
 
-def load_flow_model(config: ModelSpec) -> Flux:
+def load_flow_model(config: ModelSpec) -> Flux | FluxF8:
     ckpt_path = config.ckpt_path
     FluxClass = Flux
     if config.prequantized_flow:
-        from modules.flux_model_f8 import Flux as FluxF8
-
         FluxClass = FluxF8
 
     with torch.device("meta"):

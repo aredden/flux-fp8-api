@@ -1,6 +1,6 @@
 # Flux FP8 (true) Matmul Implementation with FastAPI
 
-This repository contains an implementation of the Flux model, along with an API that allows you to generate images based on text prompts. The API can be run via command-line arguments.
+This repository contains an implementation of the Flux model, along with an API that allows you to generate images based on text prompts. And also a simple single line of code to use the generator as a single object, similar to diffusers pipelines.
 
 ## Speed Comparison
 
@@ -73,13 +73,21 @@ If you get errors installing `torch-cublas-hgemm`, feel free to comment it out i
 
 ## Usage
 
+For a single ADA GPU with less than 24GB vram, and more than 16GB vram, you should use the `configs/config-dev-1-4080.json` config file as a base, and then tweak the parameters to fit your needs. It offloads all models to CPU when not in use, compiles the flow model with extra optimizations, and quantizes the text encoder to nf4 and the autoencoder to qfloat8.
+
+For a single ADA GPU with more than ~32GB vram, you should use the `configs/config-dev-1-RTX6000ADA.json` config file as a base, and then tweak the parameters to fit your needs. It does not offload any models to CPU, compiles the flow model with extra optimizations, and quantizes the text encoder to qfloat8 and the autoencoder to stays as bfloat16.
+
+For a single 4090 GPU, you should use the `configs/config-dev-1-4090.json` config file as a base, and then tweak the parameters to fit your needs. It offloads the text encoder and the autoencoder to CPU, compiles the flow model with extra optimizations, and quantizes the text encoder to nf4 and the autoencoder to float8.
+
+**NOTE:** For all of these configs, you must change the `ckpt_path`, `ae_path`, and `text_enc_path` parameters to the path to your own checkpoint, autoencoder, and text encoder.
+
 You can run the API server using the following command:
 
 ```bash
 python main.py --config-path <path_to_config> --port <port_number> --host <host_address>
 ```
 
-### Command-Line Arguments
+### API Command-Line Arguments
 
 -   `--config-path`: Path to the configuration file. If not provided, the model will be loaded from the command line arguments.
 -   `--port`: Port to run the server on (default: 8088).
@@ -91,17 +99,47 @@ python main.py --config-path <path_to_config> --port <port_number> --host <host_
 -   `--flux-device`: Device to run the flow model on (default: cuda:0).
 -   `--text-enc-device`: Device to run the text encoder on (default: cuda:0).
 -   `--autoencoder-device`: Device to run the autoencoder on (default: cuda:0).
--   `--num-to-quant`: Number of linear layers in the flow transformer to quantize (default: 20).
+-   `--compile`: Compile the flow model with extra optimizations (default: False).
+-   `--quant-text-enc`: Quantize the T5 text encoder to the given dtype (`qint4`, `qfloat8`, `qint2`, `qint8`, `bf16`), if `bf16`, will not quantize (default: `qfloat8`).
+-   `--quant-ae`: Quantize the autoencoder with float8 linear layers, otherwise will use bfloat16 (default: False).
+-   `--offload-flow`: Offload the flow model to the CPU when not being used to save memory (default: False).
+-   `--no-offload-ae`: Disable offloading the autoencoder to the CPU when not being used to increase e2e inference speed (default: True).
+-   `--no-offload-text-enc`: Disable offloading the text encoder to the CPU when not being used to increase e2e inference speed (default: True).
+-   `--prequantized-flow`: Load the flow model from a prequantized checkpoint, which reduces the size of the checkpoint by about 50% & reduces startup time (default: False).
+
+## Examples
+
+### Running the Server
+
+```bash
+python main.py --config-path configs/config-dev-1-4090.json --port 8088 --host 0.0.0.0
+```
+
+Or if you need more granular control over the all of the settings, you can run the server with something like this:
+
+```bash
+python main.py --port 8088 --host 0.0.0.0 \
+    --flow-model-path /path/to/your/flux1-dev.sft \
+    --text-enc-path /path/to/your/t5-v1_1-xxl-encoder-bf16 \
+    --autoencoder-path /path/to/your/ae.sft \
+    --model-version flux-dev \
+    --flux-device cuda:0 \
+    --text-enc-device cuda:0 \
+    --autoencoder-device cuda:0 \
+    --compile \
+    --quant-text-enc qfloat8 \
+    --quant-ae
+```
 
 ## Configuration
 
 The configuration files are located in the `configs` directory. You can specify different configurations for different model versions and devices.
 
-Example configuration file (`configs/config-dev.json`):
+Example configuration file for a single 4090 (`configs/config-dev-1-4090.json`):
 
-```json
+```js
 {
-    "version": "flux-dev",
+    "version": "flux-dev", // or flux-schnell
     "params": {
         "in_channels": 64,
         "vec_in_dim": 768,
@@ -114,7 +152,7 @@ Example configuration file (`configs/config-dev.json`):
         "axes_dim": [16, 56, 56],
         "theta": 10000,
         "qkv_bias": true,
-        "guidance_embed": true
+        "guidance_embed": true // if you are using flux-schnell, set this to false
     },
     "ae_params": {
         "resolution": 256,
@@ -127,23 +165,27 @@ Example configuration file (`configs/config-dev.json`):
         "scale_factor": 0.3611,
         "shift_factor": 0.1159
     },
-    "ckpt_path": "/path/to/your/flux1-dev.sft",
-    "ae_path": "/path/to/your/ae.sft",
-    "repo_id": "black-forest-labs/FLUX.1-dev",
-    "repo_flow": "flux1-dev.sft",
-    "repo_ae": "ae.sft",
-    "text_enc_max_length": 512,
-    "text_enc_path": "path/to/your/t5-v1_1-xxl-encoder-bf16",
-    "text_enc_device": "cuda:1",
-    "ae_device": "cuda:1",
+    "ckpt_path": "/your/path/to/flux1-dev.sft", // local path to original bf16 BFL flux checkpoint
+    "ae_path": "/your/path/to/ae.sft", // local path to original bf16 BFL autoencoder checkpoint
+    "repo_id": "black-forest-labs/FLUX.1-dev", // can ignore
+    "repo_flow": "flux1-dev.sft", // can ignore
+    "repo_ae": "ae.sft", // can ignore
+    "text_enc_max_length": 512, // use 256 if you are using flux-schnell
+    "text_enc_path": "city96/t5-v1_1-xxl-encoder-bf16", // or custom HF full bf16 T5EncoderModel repo id
+    "text_enc_device": "cuda:0",
+    "ae_device": "cuda:0",
     "flux_device": "cuda:0",
     "flow_dtype": "float16",
     "ae_dtype": "bfloat16",
     "text_enc_dtype": "bfloat16",
-    "text_enc_quantization_dtype": "qfloat8",
-    "compile_extras": true,
-    "compile_blocks": true,
-    ...
+    "flow_quantization_dtype": "qfloat8", // will always be qfloat8, so can ignore
+    "text_enc_quantization_dtype": "qint4", // choose between qint4, qint8, qfloat8, qint2 or delete entry for no quantization
+    "ae_quantization_dtype": "qfloat8", // can either be qfloat8 or delete entry for no quantization
+    "compile_extras": true, // compile the layers not included in the single-blocks or double-blocks
+    "compile_blocks": true, // compile the single-blocks and double-blocks
+    "offload_text_encoder": true, // offload the text encoder to cpu when not in use
+    "offload_vae": true, // offload the autoencoder to cpu when not in use
+    "offload_flow": false // offload the flow transformer to cpu when not in use
 }
 ```
 
@@ -156,6 +198,12 @@ The only things you should need to change in general are the:
 ```
 
 Other things to change can be the
+
+-   `"text_enc_max_length": 512`
+    max length for the text encoder, 256 if you are using flux-schnell
+
+-   `"ae_quantization_dtype": "qfloat8"`
+    quantization dtype for the autoencoder, can be `qfloat8` or delete entry for no quantization, will use the float8 linear layer implementation included in this repo.
 
 -   `"text_enc_quantization_dtype": "qfloat8"`
     quantization dtype for the text encoder, if `qfloat8` or `qint2` will use quanto, `qint4`, `qint8` will use bitsandbytes
@@ -220,9 +268,11 @@ python main.py --port 8088 --host 0.0.0.0 \
     --autoencoder-path /path/to/your/ae.sft \
     --model-version flux-dev \
     --flux-device cuda:0 \
-    --text-enc-device cuda:1 \
-    --autoencoder-device cuda:1 \
-    --num-to-quant 20
+    --text-enc-device cuda:0 \
+    --autoencoder-device cuda:0 \
+    --compile \
+    --quant-text-enc qfloat8 \
+    --quant-ae
 ```
 
 ### Generating an Image
@@ -261,5 +311,34 @@ res = requests.post(
 
 with open(f"output.jpg", "wb") as f:
     f.write(io.BytesIO(res.content).read())
+
+```
+
+You can also generate an image by directly importing the FluxPipeline class and using it to generate an image. This is useful if you have a custom model configuration and want to generate an image without having to run the server.
+
+```py
+import io
+from flux_pipeline import FluxPipeline
+
+
+pipe = FluxPipeline.load_pipeline_from_config_path(
+    "configs/config-dev-1-4090.json"  # or whatever your config is
+)
+
+output_jpeg_bytes: io.BytesIO = pipe.generate(
+    # Required args:
+    prompt="A beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
+    # Optional args:
+    width=1024,
+    height=1024,
+    num_inference_steps=20,
+    guidance_scale=3.5,
+    seed=13456,
+    init_image="path/to/your/init_image.jpg",
+    strength=0.8,
+)
+
+with open("output.jpg", "wb") as f:
+    f.write(output_jpeg_bytes.getvalue())
 
 ```
