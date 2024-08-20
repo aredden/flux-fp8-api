@@ -141,7 +141,7 @@ def load_config(
             axes_dim=[16, 56, 56],
             theta=10_000,
             qkv_bias=True,
-            guidance_embed=True,
+            guidance_embed=name == ModelVersion.flux_dev,
         ),
         ae_path=ae_path,
         ae_params=AutoEncoderParams(
@@ -243,8 +243,8 @@ def load_autoencoder(config: ModelSpec) -> AutoEncoder:
         sd = load_sft(ckpt_path, device=str(config.ae_device))
         missing, unexpected = ae.load_state_dict(sd, strict=False, assign=True)
         print_load_warning(missing, unexpected)
+    ae.to(device=into_device(config.ae_device), dtype=into_dtype(config.ae_dtype))
     if config.ae_quantization_dtype is not None:
-        ae.to(into_device(config.ae_device))
         from float8_quantize import recursive_swap_linears
 
         recursive_swap_linears(ae)

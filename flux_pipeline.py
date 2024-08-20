@@ -40,6 +40,12 @@ if TYPE_CHECKING:
 
 
 class FluxPipeline:
+    """
+    FluxPipeline is a class that provides a pipeline for generating images using the Flux model.
+    It handles input preparation, timestep generation, noise generation, device management
+    and model compilation.
+    """
+
     def __init__(
         self,
         name: str,
@@ -56,7 +62,12 @@ class FluxPipeline:
         t5_device: torch.device | str = "cuda:1",
         config: ModelSpec = None,
     ):
+        """
+        Initialize the FluxPipeline class.
 
+        This class is responsible for preparing input tensors for the Flux model, generating
+        timesteps and noise, and handling device management for model offloading.
+        """
         self.name = name
         self.device_flux = (
             flux_device
@@ -104,10 +115,10 @@ class FluxPipeline:
             if not self.config.prequantized_flow:
                 print("Warmups for compile...")
                 warmup_dict = dict(
-                    prompt="Street photography portrait of a beautiful asian woman in traditional clothing with golden hairpin and blue eyes, wearing a red kimono with dragon patterns",
-                    height=1024,
-                    width=1024,
-                    num_steps=30,
+                    prompt="A beautiful test image used to solidify the fp8 nn.Linear input scales prior to compilation 😉",
+                    height=768,
+                    width=768,
+                    num_steps=25,
                     guidance=3.5,
                     seed=10,
                 )
@@ -138,6 +149,32 @@ class FluxPipeline:
         target_device: torch.device = torch.device("cuda:0"),
         target_dtype: torch.dtype = torch.float16,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Prepare input tensors for the Flux model.
+
+        This function processes the input image and text prompt, converting them into
+        the appropriate format and embedding representations required by the model.
+
+        Args:
+            img (torch.Tensor): Input image tensor of shape (batch_size, channels, height, width).
+            prompt (str | list[str]): Text prompt or list of prompts guiding the image generation.
+            target_device (torch.device, optional): The target device for the output tensors.
+                Defaults to torch.device("cuda:0").
+            target_dtype (torch.dtype, optional): The target data type for the output tensors.
+                Defaults to torch.float16.
+
+        Returns:
+            tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]: A tuple containing:
+                - img: Processed image tensor.
+                - img_ids: Image position IDs.
+                - vec: Clip text embedding vector.
+                - txt: T5 text embedding hidden states.
+                - txt_ids: Text position IDs.
+
+        Note:
+            This function handles the necessary device management for text encoder offloading
+            if enabled in the configuration.
+        """
         bs, c, h, w = img.shape
         if bs == 1 and not isinstance(prompt, str):
             bs = len(prompt)
@@ -165,8 +202,8 @@ class FluxPipeline:
 
         img_ids = img_ids[None].repeat(bs, 1, 1, 1).flatten(1, 2)
         if self.offload_text_encoder:
-            self.clip.cuda(self.device_clip)
-            self.t5.cuda(self.device_t5)
+            self.clip.to(device=self.device_clip)
+            self.t5.to(device=self.device_t5)
         vec, txt, txt_ids = get_weighted_text_embeddings_flux(
             self,
             prompt,
@@ -201,6 +238,7 @@ class FluxPipeline:
         max_shift: float = 1.15,
         shift: bool = True,
     ) -> list[float]:
+        """Generates a schedule of timesteps for the given number of steps and image sequence length."""
         # extra step for zero
         timesteps = torch.linspace(1, 0, num_steps + 1)
 
@@ -221,7 +259,8 @@ class FluxPipeline:
         generator: torch.Generator,
         dtype=None,
         device=None,
-    ):
+    ) -> torch.Tensor:
+        """Generates a latent noise tensor of the given shape and dtype on the given device."""
         if device is None:
             device = self.device_flux
         if dtype is None:
@@ -240,6 +279,7 @@ class FluxPipeline:
 
     @torch.inference_mode()
     def into_bytes(self, x: torch.Tensor) -> io.BytesIO:
+        """Converts the image tensor to bytes."""
         # bring into PIL format and save
         torch.cuda.synchronize()
         x = x.contiguous()
@@ -257,10 +297,34 @@ class FluxPipeline:
         torch.cuda.synchronize()
         im = self.img_encoder.encode_torch(im, quality=99)
         images.clear()
-        return io.BytesIO(im)
+        return im
+
+    @torch.inference_mode()
+    def load_init_image_if_needed(
+        self, init_image: torch.Tensor | str | Image.Image | np.ndarray
+    ) -> torch.Tensor:
+        """
+        Loads the initial image if it is a string, numpy array, or PIL.Image,
+        if torch.Tensor, expects it to be in the correct format and returns it as is.
+        """
+        if isinstance(init_image, str):
+            try:
+                init_image = Image.open(init_image)
+            except Exception as e:
+                init_image = Image.open(
+                    io.BytesIO(standard_b64decode(init_image.split(",")[-1]))
+                )
+            init_image = torch.from_numpy(np.array(init_image)).type(torch.uint8)
+        elif isinstance(init_image, np.ndarray):
+            init_image = torch.from_numpy(init_image).type(torch.uint8)
+        elif isinstance(init_image, Image.Image):
+            init_image = torch.from_numpy(np.array(init_image)).type(torch.uint8)
+
+        return init_image
 
     @torch.inference_mode()
     def vae_decode(self, x: torch.Tensor, height: int, width: int) -> torch.Tensor:
+        """Decodes the latent tensor to the pixel space."""
         if self.offload_vae:
             self.ae.to(self.device_ae)
             x = x.to(self.device_ae)
@@ -290,6 +354,7 @@ class FluxPipeline:
     def resize_center_crop(
         self, img: torch.Tensor, height: int, width: int
     ) -> torch.Tensor:
+        """Resizes and crops the image to the given height and width."""
         img = TF.resize(img, min(width, height))
         img = TF.center_crop(img, (height, width))
         return img
@@ -305,6 +370,11 @@ class FluxPipeline:
         generator: torch.Generator = None,
         num_images: int = 1,
     ) -> tuple[torch.Tensor, List[float]]:
+        """
+        Preprocesses the latent tensor for the given number of steps and image sequence length.
+        Also, if an initial image is provided, it is vae encoded and injected with the appropriate noise
+        given the strength and number of steps replacing the latent tensor.
+        """
         # prepare input
 
         if init_image is not None:
@@ -364,20 +434,55 @@ class FluxPipeline:
         num_steps: int = 24,
         guidance: float = 3.5,
         seed: int | None = None,
-        init_image: torch.Tensor | str | None = None,
+        init_image: torch.Tensor | str | Image.Image | np.ndarray | None = None,
         strength: float = 1.0,
         silent: bool = False,
         num_images: int = 1,
         return_seed: bool = False,
     ) -> io.BytesIO:
+        """
+        Generate images based on the given prompt and parameters.
+
+        Args:
+            prompt `(str)`: The text prompt to guide the image generation.
+
+            width `(int, optional)`: Width of the generated image. Defaults to 720.
+
+            height `(int, optional)`: Height of the generated image. Defaults to 1024.
+
+            num_steps `(int, optional)`: Number of denoising steps. Defaults to 24.
+
+            guidance `(float, optional)`: Guidance scale for text-to-image generation. Defaults to 3.5.
+
+            seed `(int | None, optional)`: Random seed for reproducibility. If None, a random seed is used. Defaults to None.
+
+            init_image `(torch.Tensor | str | Image.Image | np.ndarray | None, optional)`: Initial image for image-to-image generation. Defaults to None.
+
+                -- note: if the image's height/width do not match the height/width of the generated image, the image is resized and centered cropped to match the height/width arguments.
+
+                -- If a string is provided, it is assumed to be either a path to an image file or a base64 encoded image.
+
+                -- If a numpy array is provided, it is assumed to be an RGB numpy array of shape (height, width, 3) and dtype uint8.
+
+                -- If a PIL.Image is provided, it is assumed to be an RGB PIL.Image.
+
+                -- If a torch.Tensor is provided, it is assumed to be a torch.Tensor of shape (height, width, 3) and dtype uint8 with range [0, 255].
+
+            strength `(float, optional)`: Strength of the init_image in image-to-image generation. Defaults to 1.0.
+
+            silent `(bool, optional)`: If True, suppresses progress bar. Defaults to False.
+
+            num_images `(int, optional)`: Number of images to generate. Defaults to 1.
+
+            return_seed `(bool, optional)`: If True, returns the seed along with the generated image. Defaults to False.
+
+        Returns:
+            io.BytesIO: Generated image(s) in bytes format.
+            int: Seed used for generation (only if return_seed is True).
+        """
         num_steps = 4 if self.name == "flux-schnell" else num_steps
 
-        if isinstance(init_image, str):
-            try:
-                init_image = Image.open(init_image)
-            except Exception as e:
-                init_image = Image.open(io.BytesIO(standard_b64decode(init_image)))
-            init_image = torch.from_numpy(np.array(init_image)).type(torch.uint8)
+        init_image = self.load_init_image_if_needed(init_image)
 
         # allow for packing and conversion to latent space
         height = 16 * (height // 16)
@@ -465,8 +570,9 @@ class FluxPipeline:
         from float8_quantize import quantize_flow_transformer_and_dispatch_float8
 
         with torch.inference_mode():
-            print("flow_quantization_dtype", config.flow_quantization_dtype)
-            print("prequantized_flow?", config.prequantized_flow)
+            logger.info(
+                f"Loading as prequantized flow transformer? {config.prequantized_flow}"
+            )
 
             models = load_models_from_config(config)
             config = models.config
