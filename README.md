@@ -73,11 +73,11 @@ If you get errors installing `torch-cublas-hgemm`, feel free to comment it out i
 
 ## Usage
 
-For a single ADA GPU with less than 24GB vram, and more than 16GB vram, you should use the `configs/config-dev-1-4080.json` config file as a base, and then tweak the parameters to fit your needs. It offloads all models to CPU when not in use, compiles the flow model with extra optimizations, and quantizes the text encoder to nf4 and the autoencoder to qfloat8.
+For a single ADA GPU with less than 24GB vram, and more than 16GB vram, you should use the `configs/config-dev-offload-1-4080.json` config file as a base, and then tweak the parameters to fit your needs. It offloads all models to CPU when not in use, compiles the flow model with extra optimizations, and quantizes the text encoder to nf4 and the autoencoder to qfloat8.
 
 For a single ADA GPU with more than ~32GB vram, you should use the `configs/config-dev-1-RTX6000ADA.json` config file as a base, and then tweak the parameters to fit your needs. It does not offload any models to CPU, compiles the flow model with extra optimizations, and quantizes the text encoder to qfloat8 and the autoencoder to stays as bfloat16.
 
-For a single 4090 GPU, you should use the `configs/config-dev-1-4090.json` config file as a base, and then tweak the parameters to fit your needs. It offloads the text encoder and the autoencoder to CPU, compiles the flow model with extra optimizations, and quantizes the text encoder to nf4 and the autoencoder to float8.
+For a single 4090 GPU, you should use the `configs/config-dev-offload-1-4090.json` config file as a base, and then tweak the parameters to fit your needs. It offloads the text encoder and the autoencoder to CPU, compiles the flow model with extra optimizations, and quantizes the text encoder to nf4 and the autoencoder to float8.
 
 **NOTE:** For all of these configs, you must change the `ckpt_path`, `ae_path`, and `text_enc_path` parameters to the path to your own checkpoint, autoencoder, and text encoder.
 
@@ -135,7 +135,7 @@ python main.py --port 8088 --host 0.0.0.0 \
 
 The configuration files are located in the `configs` directory. You can specify different configurations for different model versions and devices.
 
-Example configuration file for a single 4090 (`configs/config-dev-1-4090.json`):
+Example configuration file for a single 4090 (`configs/config-dev-offload-1-4090.json`):
 
 ```js
 {
@@ -256,7 +256,7 @@ Other things to change can be the
 ### Running the Server
 
 ```bash
-python main.py --config-path configs/config-dev.json --port 8088 --host 0.0.0.0
+python main.py --config-path configs/config-dev-offload-1-4090.json --port 8088 --host 0.0.0.0
 ```
 
 OR, if you need more granular control over the server, you can run the server with something like this:
@@ -322,7 +322,7 @@ from flux_pipeline import FluxPipeline
 
 
 pipe = FluxPipeline.load_pipeline_from_config_path(
-    "configs/config-dev-1-4090.json"  # or whatever your config is
+    "configs/config-dev-offload-1-4090.json"  # or whatever your config is
 )
 
 output_jpeg_bytes: io.BytesIO = pipe.generate(
