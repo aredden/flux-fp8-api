@@ -29,8 +29,6 @@ try:
 except ImportError:
     CublasLinear = type(None)
 
-FluxType = TypeVar("FluxType", nn.Module)
-
 
 class F8Linear(nn.Module):
 
@@ -322,12 +320,12 @@ def recursive_swap_linears(
 
 @torch.inference_mode()
 def quantize_flow_transformer_and_dispatch_float8(
-    flow_model: FluxType,
+    flow_model: nn.Module,
     device=torch.device("cuda"),
     float8_dtype=torch.float8_e4m3fn,
     input_float8_dtype=torch.float8_e5m2,
     offload_flow=False,
-) -> FluxType:
+) -> nn.Module:
     """
     Quantize the flux flow transformer model (original BFL codebase version) and dispatch to the given device.
 
