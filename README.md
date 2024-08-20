@@ -2,6 +2,29 @@
 
 This repository contains an implementation of the Flux model, along with an API that allows you to generate images based on text prompts. The API can be run via command-line arguments.
 
+## Speed Comparison
+
+| Resolution | Device     | Test                       | Average it/s |
+| ---------- | ---------- | -------------------------- | ------------ |
+| 1024x1024  | RTX4090    | bfl codebase fp8 wo quant  | 1.7          |
+| 1024x1024  | RTX4090    | ❎ compile blocks & extras | 2.55         |
+| 1024x1024  | RTX4090    | ✅ compile blocks & extras | 3.51         |
+| 1024x1024  | RTX6000ADA | bfl codebase               | 1.74         |
+| 1024x1024  | RTX6000ADA | ❎ compile blocks & extras | 2.08         |
+| 1024x1024  | RTX6000ADA | ✅ compile blocks & extras | 2.8          |
+| 768x768    | RTX4090    | bfl codebase fp8 wo quant  | 2.32         |
+| 768x768    | RTX4090    | ❎ compile blocks & extras | 4.47         |
+| 768x768    | RTX4090    | ✅ compile blocks & extras | 6.2          |
+| 768x768    | RTX6000ADA | bfl codebase               | 3.01         |
+| 768x768    | RTX6000ADA | ❎ compile blocks & extras | 3.43         |
+| 768x768    | RTX6000ADA | ✅ compile blocks & extras | 4.46         |
+| 1024x720   | RTX4090    | bfl codebase fp8 wo quant  | 3.01         |
+| 1024x720   | RTX4090    | ❎ compile blocks & extras | 3.6          |
+| 1024x720   | RTX4090    | ✅ compile blocks & extras | 4.96         |
+| 1024x720   | RTX6000ADA | bfl codebase               | 2.37         |
+| 1024x720   | RTX6000ADA | ❎ compile blocks & extras | 2.87         |
+| 1024x720   | RTX6000ADA | ✅ compile blocks & extras | 3.78         |
+
 ## Table of Contents
 
 -   [Installation](#installation)
