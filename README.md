@@ -8,28 +8,28 @@ Note:
 
 -   The "bfl codebase" refers to the original [BFL codebase](https://github.com/black-forest-labs/flux), not this repo.
 -   The "fp8 wo quant" refers to the original BFL codebase using fp8 weight only quantization, not using fp8 matmul which is default in this repo.
--   The "compile blocks & extras" refers to the option within this repo setting the config values `"compile_blocks" true` & `"compiled_extras": true`. ❎ means both were set to false, ✅ means both were set to true.
--   All generations which including a ❎ or ✅ are using this repo.
+-   The "compile blocks & extras" refers to the option within this repo setting the config values `"compile_blocks" true` & `"compiled_extras": true`. ❌ means both were set to false, ✅ means both were set to true.
+-   All generations which including a ❌ or ✅ are using this repo.
 
 | Resolution | Device     | Test                       | Average it/s |
 | ---------- | ---------- | -------------------------- | ------------ |
 | 1024x1024  | RTX4090    | bfl codebase fp8 wo quant  | 1.7          |
-| 1024x1024  | RTX4090    | ❎ compile blocks & extras | 2.55         |
+| 1024x1024  | RTX4090    | ❌ compile blocks & extras | 2.55         |
 | 1024x1024  | RTX4090    | ✅ compile blocks & extras | 3.51         |
 | 1024x1024  | RTX6000ADA | bfl codebase               | 1.74         |
-| 1024x1024  | RTX6000ADA | ❎ compile blocks & extras | 2.08         |
+| 1024x1024  | RTX6000ADA | ❌ compile blocks & extras | 2.08         |
 | 1024x1024  | RTX6000ADA | ✅ compile blocks & extras | 2.8          |
 | 768x768    | RTX4090    | bfl codebase fp8 wo quant  | 2.32         |
-| 768x768    | RTX4090    | ❎ compile blocks & extras | 4.47         |
+| 768x768    | RTX4090    | ❌ compile blocks & extras | 4.47         |
 | 768x768    | RTX4090    | ✅ compile blocks & extras | 6.2          |
 | 768x768    | RTX6000ADA | bfl codebase               | 3.01         |
-| 768x768    | RTX6000ADA | ❎ compile blocks & extras | 3.43         |
+| 768x768    | RTX6000ADA | ❌ compile blocks & extras | 3.43         |
 | 768x768    | RTX6000ADA | ✅ compile blocks & extras | 4.46         |
 | 1024x720   | RTX4090    | bfl codebase fp8 wo quant  | 3.01         |
-| 1024x720   | RTX4090    | ❎ compile blocks & extras | 3.6          |
+| 1024x720   | RTX4090    | ❌ compile blocks & extras | 3.6          |
 | 1024x720   | RTX4090    | ✅ compile blocks & extras | 4.96         |
 | 1024x720   | RTX6000ADA | bfl codebase               | 2.37         |
-| 1024x720   | RTX6000ADA | ❎ compile blocks & extras | 2.87         |
+| 1024x720   | RTX6000ADA | ❌ compile blocks & extras | 2.87         |
 | 1024x720   | RTX6000ADA | ✅ compile blocks & extras | 3.78         |
 
 ## Table of Contents
