@@ -4,6 +4,13 @@ This repository contains an implementation of the Flux model, along with an API 
 
 ## Speed Comparison
 
+Note:
+
+-   The "bfl codebase" refers to the original [BFL codebase](https://github.com/black-forest-labs/flux), not this repo.
+-   The "fp8 wo quant" refers to the original BFL codebase using fp8 weight only quantization, not using fp8 matmul which is default in this repo.
+-   The "compile blocks & extras" refers to the option within this repo setting the config values `"compile_blocks" true` & `"compiled_extras": true`. ❎ means both were set to false, ✅ means both were set to true.
+-   All generations which including a ❎ or ✅ are using this repo.
+
 | Resolution | Device     | Test                       | Average it/s |
 | ---------- | ---------- | -------------------------- | ------------ |
 | 1024x1024  | RTX4090    | bfl codebase fp8 wo quant  | 1.7          |
