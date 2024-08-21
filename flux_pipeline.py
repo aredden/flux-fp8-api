@@ -1,5 +1,6 @@
 import io
 import math
+import random
 from typing import TYPE_CHECKING, Callable, List
 from PIL import Image
 import numpy as np
@@ -35,6 +36,12 @@ from util import (
     load_config_from_path,
     load_models_from_config,
 )
+import platform
+
+if platform.system() == "Windows":
+    MAX_RAND = 2**16 - 1
+else:
+    MAX_RAND = 2**32 - 1
 
 
 if TYPE_CHECKING:
@@ -146,6 +153,18 @@ class FluxPipeline:
             if self.config.compile_extras:
                 for extra in to_gpu_extras:
                     getattr(self.model, extra).compile()
+
+    def set_seed(self, seed: int | None = None) -> torch.Generator:
+        if isinstance(seed, (int, float)):
+            seed = int(abs(seed)) % MAX_RAND
+            self.rng = torch.manual_seed(seed)
+        else:
+            seed = abs(self.rng.seed()) % MAX_RAND
+        torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        cuda_generator = torch.Generator("cuda").manual_seed(seed)
+        return cuda_generator, seed
 
     @torch.inference_mode()
     def prepare(
@@ -288,24 +307,28 @@ class FluxPipeline:
         )
 
     @torch.inference_mode()
-    def into_bytes(self, x: torch.Tensor) -> io.BytesIO:
+    def into_bytes(self, x: torch.Tensor, jpeg_quality: int = 99) -> io.BytesIO:
         """Converts the image tensor to bytes."""
         # bring into PIL format and save
-        torch.cuda.synchronize()
-        x = x.contiguous()
-        x = x.clamp(-1, 1)
         num_images = x.shape[0]
         images: List[torch.Tensor] = []
         for i in range(num_images):
-            x = x[i].add(1.0).mul(127.5).clamp(0, 255).contiguous().type(torch.uint8)
+            x = (
+                x[i]
+                .clamp(-1, 1)
+                .add(1.0)
+                .mul(127.5)
+                .clamp(0, 255)
+                .contiguous()
+                .type(torch.uint8)
+            )
             images.append(x)
         if len(images) == 1:
             im = images[0]
         else:
             im = torch.vstack(images)
 
-        torch.cuda.synchronize()
-        im = self.img_encoder.encode_torch(im, quality=99)
+        im = self.img_encoder.encode_torch(im, quality=jpeg_quality)
         images.clear()
         return im
 
@@ -449,6 +472,7 @@ class FluxPipeline:
         silent: bool = False,
         num_images: int = 1,
         return_seed: bool = False,
+        jpeg_quality: int = 99,
     ) -> io.BytesIO:
         """
         Generate images based on the given prompt and parameters.
@@ -486,6 +510,8 @@ class FluxPipeline:
 
             return_seed `(bool, optional)`: If True, returns the seed along with the generated image. Defaults to False.
 
+            jpeg_quality `(int, optional)`: Quality of the JPEG compression. Defaults to 99.
+
         Returns:
             io.BytesIO: Generated image(s) in bytes format.
             int: Seed used for generation (only if return_seed is True).
@@ -497,13 +523,11 @@ class FluxPipeline:
         # allow for packing and conversion to latent space
         height = 16 * (height // 16)
         width = 16 * (width // 16)
-        if isinstance(seed, str):
-            seed = int(seed)
-        if seed is None:
-            seed = self.rng.seed()
-        logger.info(f"Generating with:\nSeed: {seed}\nPrompt: {prompt}")
 
-        generator = torch.Generator(device=self.device_flux).manual_seed(seed)
+        generator, seed = self.set_seed(seed)
+
+        if not silent:
+            logger.info(f"Generating with:\nSeed: {seed}\nPrompt: {prompt}")
 
         # preprocess the latent
         img, timesteps = self.preprocess_latent(
@@ -565,14 +589,14 @@ class FluxPipeline:
         # offload the model to cpu if needed
         if self.offload_flow:
             self.model.to("cpu")
-        torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
 
         # decode latents to pixel space
         img = self.vae_decode(img, height, width)
 
         if return_seed:
-            return self.into_bytes(img), seed
-        return self.into_bytes(img)
+            return self.into_bytes(img, jpeg_quality=jpeg_quality), seed
+        return self.into_bytes(img, jpeg_quality=jpeg_quality)
 
     @classmethod
     def load_pipeline_from_config_path(
@@ -591,9 +615,10 @@ class FluxPipeline:
         from float8_quantize import quantize_flow_transformer_and_dispatch_float8
 
         with torch.inference_mode():
-            logger.info(
-                f"Loading as prequantized flow transformer? {config.prequantized_flow}"
-            )
+            if debug:
+                logger.info(
+                    f"Loading as prequantized flow transformer? {config.prequantized_flow}"
+                )
 
             models = load_models_from_config(config)
             config = models.config
