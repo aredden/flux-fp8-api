@@ -158,6 +158,14 @@ class FluxPipeline:
         if isinstance(seed, (int, float)):
             seed = int(abs(seed)) % MAX_RAND
             self.rng = torch.manual_seed(seed)
+        elif isinstance(seed, str):
+            try:
+                seed = abs(int(seed)) % MAX_RAND
+            except Exception as e:
+                logger.warning(
+                    f"Recieved string representation of seed, but was not able to convert to int: {seed}, using random seed"
+                )
+                seed = abs(self.rng.seed()) % MAX_RAND
         else:
             seed = abs(self.rng.seed()) % MAX_RAND
         torch.cuda.manual_seed_all(seed)
