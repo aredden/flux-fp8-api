@@ -331,8 +331,8 @@ output_jpeg_bytes: io.BytesIO = pipe.generate(
     # Optional args:
     width=1024,
     height=1024,
-    num_inference_steps=20,
-    guidance_scale=3.5,
+    num_steps=20,
+    guidance=3.5,
     seed=13456,
     init_image="path/to/your/init_image.jpg",
     strength=0.8,
