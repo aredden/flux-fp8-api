@@ -8,7 +8,12 @@ from modules.conditioner import HFEmbedder
 from modules.flux_model import Flux, FluxParams
 from modules.flux_model_f8 import Flux as FluxF8
 from safetensors.torch import load_file as load_sft
-from enum import StrEnum
+try:
+    from enum import StrEnum
+except:
+    from enum import Enum
+    class StrEnum(str, Enum):
+        pass
 from pydantic import BaseModel, ConfigDict
 from loguru import logger
 
