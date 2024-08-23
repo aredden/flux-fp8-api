@@ -343,15 +343,6 @@ def get_weighted_text_embeddings_flux(
     t5_length = 512 if pipe.name == "flux-dev" else 256
     clip_length = 77
 
-    tokenizer_t5(
-        prompt,
-        add_special_tokens=True,
-        padding="max_length",
-        truncation=True,
-        max_length=t5_length,
-        return_tensors="pt",
-    )
-
     # tokenizer 1
     prompt_tokens_clip, prompt_weights_clip = get_prompts_tokens_with_weights(
         tokenizer_clip, prompt, debug=debug
