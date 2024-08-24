@@ -645,7 +645,13 @@ class FluxPipeline:
 
             if not config.prequantized_flow:
                 flow_model = quantize_flow_transformer_and_dispatch_float8(
-                    flow_model, flux_device, offload_flow=config.offload_flow
+                    flow_model,
+                    flux_device,
+                    offload_flow=config.offload_flow,
+                    swap_linears_with_cublaslinear=flux_dtype == torch.float16,
+                    flow_dtype=flux_dtype,
+                    quantize_modulation=config.quantize_modulation,
+                    quantize_flow_embedder_layers=config.quantize_flow_embedder_layers,
                 )
             else:
                 flow_model.eval().requires_grad_(False)

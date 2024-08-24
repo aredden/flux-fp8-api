@@ -8,12 +8,16 @@ from modules.conditioner import HFEmbedder
 from modules.flux_model import Flux, FluxParams
 from modules.flux_model_f8 import Flux as FluxF8
 from safetensors.torch import load_file as load_sft
+
 try:
     from enum import StrEnum
 except:
     from enum import Enum
+
     class StrEnum(str, Enum):
         pass
+
+
 from pydantic import BaseModel, ConfigDict
 from loguru import logger
 
@@ -60,6 +64,11 @@ class ModelSpec(BaseModel):
     offload_vae: bool = False
     offload_flow: bool = False
     prequantized_flow: bool = False
+
+    # Improved precision via not quanitzing the modulation linear layers
+    quantize_modulation: bool = True
+    # Improved precision via not quanitzing the flow embedder layers
+    quantize_flow_embedder_layers: bool = True
 
     model_config: ConfigDict = {
         "arbitrary_types_allowed": True,
