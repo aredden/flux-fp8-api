@@ -129,6 +129,22 @@ def parse_args():
         + "and then saving the state_dict as a safetensors file), "
         + "which reduces the size of the checkpoint by about 50% & reduces startup time",
     )
+    parser.add_argument(
+        "-nqfm",
+        "--no-quantize-flow-modulation",
+        action="store_false",
+        default=True,
+        dest="quantize_modulation",
+        help="Disable quantization of the modulation layers in the flow model, adds ~2GB vram usage for moderate precision improvements",
+    )
+    parser.add_argument(
+        "-qfl",
+        "--quantize-flow-embedder-layers",
+        action="store_true",
+        default=False,
+        dest="quantize_flow_embedder_layers",
+        help="Quantize the flow embedder layers in the flow model, saves ~512MB vram usage, but precision loss is very noticeable",
+    )
     return parser.parse_args()
 
 
@@ -171,6 +187,8 @@ def main():
             offload_ae=args.offload_ae,
             offload_text_enc=args.offload_text_enc,
             prequantized_flow=args.prequantized_flow,
+            quantize_modulation=args.quantize_modulation,
+            quantize_flow_embedder_layers=args.quantize_flow_embedder_layers,
         )
         app.state.model = FluxPipeline.load_pipeline_from_config(config)
 

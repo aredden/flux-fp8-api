@@ -135,6 +135,8 @@ def load_config(
     quant_text_enc: Optional[Literal["float8", "qint2", "qint4", "qint8"]] = None,
     quant_ae: bool = False,
     prequantized_flow: bool = False,
+    quantize_modulation: bool = True,
+    quantize_flow_embedder_layers: bool = False,
 ) -> ModelSpec:
     """
     Load a model configuration using the passed arguments.
@@ -202,6 +204,8 @@ def load_config(
         }.get(quant_text_enc, None),
         ae_quantization_dtype=QuantizationDtype.qfloat8 if quant_ae else None,
         prequantized_flow=prequantized_flow,
+        quantize_modulation=quantize_modulation,
+        quantize_flow_embedder_layers=quantize_flow_embedder_layers,
     )
 
 
