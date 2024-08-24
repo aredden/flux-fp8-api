@@ -6,14 +6,17 @@ import torch
 from modules.autoencoder import AutoEncoder, AutoEncoderParams
 from modules.conditioner import HFEmbedder
 from modules.flux_model import Flux, FluxParams
-from modules.flux_model_f8 import Flux as FluxF8
 from safetensors.torch import load_file as load_sft
+
 try:
     from enum import StrEnum
 except:
     from enum import Enum
+
     class StrEnum(str, Enum):
         pass
+
+
 from pydantic import BaseModel, ConfigDict
 from loguru import logger
 
@@ -61,6 +64,11 @@ class ModelSpec(BaseModel):
     offload_flow: bool = False
     prequantized_flow: bool = False
 
+    # Improved precision via not quanitzing the modulation linear layers
+    quantize_modulation: bool = True
+    # Improved precision via not quanitzing the flow embedder layers
+    quantize_flow_embedder_layers: bool = False
+
     model_config: ConfigDict = {
         "arbitrary_types_allowed": True,
         "use_enum_values": True,
@@ -84,6 +92,8 @@ def parse_device(device: str | torch.device | None) -> torch.device:
 
 
 def into_dtype(dtype: str) -> torch.dtype:
+    if isinstance(dtype, torch.dtype):
+        return dtype
     if dtype == "float16":
         return torch.float16
     elif dtype == "bfloat16":
@@ -125,6 +135,8 @@ def load_config(
     quant_text_enc: Optional[Literal["float8", "qint2", "qint4", "qint8"]] = None,
     quant_ae: bool = False,
     prequantized_flow: bool = False,
+    quantize_modulation: bool = True,
+    quantize_flow_embedder_layers: bool = False,
 ) -> ModelSpec:
     """
     Load a model configuration using the passed arguments.
@@ -192,6 +204,8 @@ def load_config(
         }.get(quant_text_enc, None),
         ae_quantization_dtype=QuantizationDtype.qfloat8 if quant_ae else None,
         prequantized_flow=prequantized_flow,
+        quantize_modulation=quantize_modulation,
+        quantize_flow_embedder_layers=quantize_flow_embedder_layers,
     )
 
 
@@ -219,16 +233,14 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
         )
 
 
-def load_flow_model(config: ModelSpec) -> Flux | FluxF8:
+def load_flow_model(config: ModelSpec) -> Flux:
     ckpt_path = config.ckpt_path
     FluxClass = Flux
-    if config.prequantized_flow:
-        FluxClass = FluxF8
 
     with torch.device("meta"):
-        model = FluxClass(config.params, dtype=into_dtype(config.flow_dtype)).type(
-            into_dtype(config.flow_dtype)
-        )
+        model = FluxClass(config, dtype=into_dtype(config.flow_dtype))
+        if not config.prequantized_flow:
+            model.type(into_dtype(config.flow_dtype))
 
     if ckpt_path is not None:
         # load_sft doesn't support torch.device
@@ -279,7 +291,7 @@ def load_autoencoder(config: ModelSpec) -> AutoEncoder:
 
 
 class LoadedModels(BaseModel):
-    flow: Flux | FluxF8
+    flow: Flux
     ae: AutoEncoder
     clip: HFEmbedder
     t5: HFEmbedder

@@ -1,3 +1,4 @@
+from loguru import logger
 import torch
 import torch.nn as nn
 from torchao.float8.float8_utils import (
@@ -10,7 +11,8 @@ import math
 from torch.compiler import is_compiling
 from torch import __version__
 from torch.version import cuda
-from typing import TypeVar
+
+from modules.flux_model import Modulation
 
 IS_TORCH_2_4 = __version__ < (2, 4, 9)
 LT_TORCH_2_4 = __version__ < (2, 4)
@@ -42,7 +44,7 @@ class F8Linear(nn.Module):
         float8_dtype=torch.float8_e4m3fn,
         float_weight: torch.Tensor = None,
         float_bias: torch.Tensor = None,
-        num_scale_trials: int = 24,
+        num_scale_trials: int = 12,
         input_float8_dtype=torch.float8_e5m2,
     ) -> None:
         super().__init__()
@@ -183,6 +185,11 @@ class F8Linear(nn.Module):
             1, dtype=self.weight.dtype, device=self.weight.device, requires_grad=False
         )
 
+    def set_weight_tensor(self, tensor: torch.Tensor):
+        self.weight.data = tensor
+        self.weight_initialized = False
+        self.quantize_weight()
+
     def quantize_input(self, x: torch.Tensor):
         if self.input_scale_initialized:
             return to_fp8_saturated(x * self.input_scale, self.input_float8_dtype)
@@ -279,10 +286,12 @@ class F8Linear(nn.Module):
         return f8_lin
 
 
+@torch.inference_mode()
 def recursive_swap_linears(
     model: nn.Module,
     float8_dtype=torch.float8_e4m3fn,
     input_float8_dtype=torch.float8_e5m2,
+    quantize_modulation: bool = True,
 ) -> None:
     """
     Recursively swaps all nn.Linear modules in the given model with F8Linear modules.
@@ -300,6 +309,8 @@ def recursive_swap_linears(
         all linear layers in the model will be using 8-bit quantization.
     """
     for name, child in model.named_children():
+        if isinstance(child, Modulation) and not quantize_modulation:
+            continue
         if isinstance(child, nn.Linear) and not isinstance(
             child, (F8Linear, CublasLinear)
         ):
@@ -315,7 +326,35 @@ def recursive_swap_linears(
             )
             del child
         else:
-            recursive_swap_linears(child)
+            recursive_swap_linears(
+                child,
+                float8_dtype=float8_dtype,
+                input_float8_dtype=input_float8_dtype,
+                quantize_modulation=quantize_modulation,
+            )
+
+
+@torch.inference_mode()
+def swap_to_cublaslinear(model: nn.Module):
+    if not isinstance(CublasLinear, torch.nn.Module):
+        return
+    for name, child in model.named_children():
+        if isinstance(child, nn.Linear) and not isinstance(
+            child, (F8Linear, CublasLinear)
+        ):
+            cublas_lin = CublasLinear(
+                child.in_features,
+                child.out_features,
+                bias=child.bias is not None,
+                dtype=child.weight.dtype,
+                device=child.weight.device,
+            )
+            cublas_lin.weight.data = child.weight.clone().detach()
+            cublas_lin.bias.data = child.bias.clone().detach()
+            setattr(model, name, cublas_lin)
+            del child
+        else:
+            swap_to_cublaslinear(child)
 
 
 @torch.inference_mode()
@@ -325,6 +364,10 @@ def quantize_flow_transformer_and_dispatch_float8(
     float8_dtype=torch.float8_e4m3fn,
     input_float8_dtype=torch.float8_e5m2,
     offload_flow=False,
+    swap_linears_with_cublaslinear=True,
+    flow_dtype=torch.float16,
+    quantize_modulation: bool = True,
+    quantize_flow_embedder_layers: bool = True,
 ) -> nn.Module:
     """
     Quantize the flux flow transformer model (original BFL codebase version) and dispatch to the given device.
@@ -334,19 +377,36 @@ def quantize_flow_transformer_and_dispatch_float8(
     Allows for fast dispatch to gpu & quantize without causing OOM on gpus with limited memory.
 
     After dispatching, if offload_flow is True, offloads the model to cpu.
+
+    if swap_linears_with_cublaslinear is true, and flow_dtype == torch.float16, then swap all linears with cublaslinears for 2x performance boost on consumer GPUs.
+    Otherwise will skip the cublaslinear swap.
+
+    For added extra precision, you can set quantize_flow_embedder_layers to False,
+    this helps maintain the output quality of the flow transformer moreso than fully quantizing,
+    at the expense of ~512MB more VRAM usage.
+
+    For added extra precision, you can set quantize_modulation to False,
+    this helps maintain the output quality of the flow transformer moreso than fully quantizing,
+    at the expense of ~2GB more VRAM usage, but- has a much higher impact on image quality than the embedder layers.
     """
     for module in flow_model.double_blocks:
         module.to(device)
         module.eval()
         recursive_swap_linears(
-            module, float8_dtype=float8_dtype, input_float8_dtype=input_float8_dtype
+            module,
+            float8_dtype=float8_dtype,
+            input_float8_dtype=input_float8_dtype,
+            quantize_modulation=quantize_modulation,
         )
         torch.cuda.empty_cache()
     for module in flow_model.single_blocks:
         module.to(device)
         module.eval()
         recursive_swap_linears(
-            module, float8_dtype=float8_dtype, input_float8_dtype=input_float8_dtype
+            module,
+            float8_dtype=float8_dtype,
+            input_float8_dtype=input_float8_dtype,
+            quantize_modulation=quantize_modulation,
         )
         torch.cuda.empty_cache()
     to_gpu_extras = [
@@ -367,23 +427,30 @@ def quantize_flow_transformer_and_dispatch_float8(
         if isinstance(m_extra, nn.Linear) and not isinstance(
             m_extra, (F8Linear, CublasLinear)
         ):
-            setattr(
-                flow_model,
-                module,
-                F8Linear.from_linear(
+            if quantize_flow_embedder_layers:
+                setattr(
+                    flow_model,
+                    module,
+                    F8Linear.from_linear(
+                        m_extra,
+                        float8_dtype=float8_dtype,
+                        input_float8_dtype=input_float8_dtype,
+                    ),
+                )
+            del m_extra
+        elif module != "final_layer":
+            if quantize_flow_embedder_layers:
+                recursive_swap_linears(
                     m_extra,
                     float8_dtype=float8_dtype,
                     input_float8_dtype=input_float8_dtype,
-                ),
-            )
-            del m_extra
-        elif module != "final_layer":
-            recursive_swap_linears(
-                m_extra,
-                float8_dtype=float8_dtype,
-                input_float8_dtype=input_float8_dtype,
-            )
+                    quantize_modulation=quantize_modulation,
+                )
         torch.cuda.empty_cache()
+    if swap_linears_with_cublaslinear and flow_dtype == torch.float16:
+        swap_to_cublaslinear(flow_model)
+    elif swap_linears_with_cublaslinear and flow_dtype != torch.float16:
+        logger.warning("Skipping cublas linear swap because flow_dtype is not float16")
     if offload_flow:
         flow_model.to("cpu")
         torch.cuda.empty_cache()

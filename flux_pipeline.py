@@ -31,6 +31,7 @@ from torchvision.transforms import functional as TF
 from tqdm import tqdm
 from util import (
     ModelSpec,
+    ModelVersion,
     into_device,
     into_dtype,
     load_config_from_path,
@@ -80,29 +81,17 @@ class FluxPipeline:
         This class is responsible for preparing input tensors for the Flux model, generating
         timesteps and noise, and handling device management for model offloading.
         """
+
+        if config is None:
+            raise ValueError("ModelSpec config is required!")
+
         self.debug = debug
         self.name = name
-        self.device_flux = (
-            flux_device
-            if isinstance(flux_device, torch.device)
-            else torch.device(flux_device)
-        )
-        self.device_ae = (
-            ae_device
-            if isinstance(ae_device, torch.device)
-            else torch.device(ae_device)
-        )
-        self.device_clip = (
-            clip_device
-            if isinstance(clip_device, torch.device)
-            else torch.device(clip_device)
-        )
-        self.device_t5 = (
-            t5_device
-            if isinstance(t5_device, torch.device)
-            else torch.device(t5_device)
-        )
-        self.dtype = dtype
+        self.device_flux = into_device(flux_device)
+        self.device_ae = into_device(ae_device)
+        self.device_clip = into_device(clip_device)
+        self.device_t5 = into_device(t5_device)
+        self.dtype = into_dtype(dtype)
         self.offload = offload
         self.clip: "HFEmbedder" = clip
         self.t5: "HFEmbedder" = t5
@@ -116,6 +105,8 @@ class FluxPipeline:
         self.offload_text_encoder = config.offload_text_encoder
         self.offload_vae = config.offload_vae
         self.offload_flow = config.offload_flow
+        # If models are not offloaded, move them to the appropriate devices
+
         if not self.offload_flow:
             self.model.to(self.device_flux)
         if not self.offload_vae:
@@ -124,40 +115,16 @@ class FluxPipeline:
             self.clip.to(self.device_clip)
             self.t5.to(self.device_t5)
 
-        if self.config.compile_blocks or self.config.compile_extras:
-            if not self.config.prequantized_flow:
-                logger.info("Running warmups for compile...")
-                warmup_dict = dict(
-                    prompt="A beautiful test image used to solidify the fp8 nn.Linear input scales prior to compilation 😉",
-                    height=768,
-                    width=768,
-                    num_steps=25,
-                    guidance=3.5,
-                    seed=10,
-                )
-                self.generate(**warmup_dict)
-            to_gpu_extras = [
-                "vector_in",
-                "img_in",
-                "txt_in",
-                "time_in",
-                "guidance_in",
-                "final_layer",
-                "pe_embedder",
-            ]
-            if self.config.compile_blocks:
-                for block in self.model.double_blocks:
-                    block.compile()
-                for block in self.model.single_blocks:
-                    block.compile()
-            if self.config.compile_extras:
-                for extra in to_gpu_extras:
-                    getattr(self.model, extra).compile()
+        # compile the model if needed
+        if config.compile_blocks or config.compile_extras:
+            self.compile()
 
-    def set_seed(self, seed: int | None = None) -> torch.Generator:
+    def set_seed(
+        self, seed: int | None = None, seed_globally: bool = False
+    ) -> torch.Generator:
         if isinstance(seed, (int, float)):
             seed = int(abs(seed)) % MAX_RAND
-            self.rng = torch.manual_seed(seed)
+            cuda_generator = torch.Generator("cuda").manual_seed(seed)
         elif isinstance(seed, str):
             try:
                 seed = abs(int(seed)) % MAX_RAND
@@ -166,13 +133,70 @@ class FluxPipeline:
                     f"Recieved string representation of seed, but was not able to convert to int: {seed}, using random seed"
                 )
                 seed = abs(self.rng.seed()) % MAX_RAND
+            cuda_generator = torch.Generator("cuda").manual_seed(seed)
         else:
             seed = abs(self.rng.seed()) % MAX_RAND
-        torch.cuda.manual_seed_all(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        cuda_generator = torch.Generator("cuda").manual_seed(seed)
+            cuda_generator = torch.Generator("cuda").manual_seed(seed)
+
+        if seed_globally:
+            torch.cuda.manual_seed_all(seed)
+            np.random.seed(seed)
+            random.seed(seed)
         return cuda_generator, seed
+
+    @torch.inference_mode()
+    def compile(self):
+        """
+        Compiles the model and extras.
+
+        First, if:
+
+        - A) Checkpoint which already has float8 quantized weights and tuned input scales.
+        In which case, it will not run warmups since it assumes the input scales are already tuned.
+
+        - B) Checkpoint which has not been quantized, in which  case it will be quantized
+        and the input scales will be tuned. via running a warmup loop.
+            - If the model is flux-schnell, it will run 3 warmup loops since each loop is 4 steps.
+            - If the model is flux-dev, it will run 1 warmup loop for 12 steps.
+
+        """
+
+        # Run warmups if the checkpoint is not prequantized
+        if not self.config.prequantized_flow:
+            logger.info("Running warmups for compile...")
+            warmup_dict = dict(
+                prompt="A beautiful test image used to solidify the fp8 nn.Linear input scales prior to compilation 😉",
+                height=768,
+                width=768,
+                num_steps=12,
+                guidance=3.5,
+                seed=10,
+            )
+            if self.config.version == ModelVersion.flux_schnell:
+                warmup_dict["num_steps"] = 4
+                for _ in range(3):
+                    self.generate(**warmup_dict)
+            else:
+                self.generate(**warmup_dict)
+
+        # Compile the model and extras
+        to_gpu_extras = [
+            "vector_in",
+            "img_in",
+            "txt_in",
+            "time_in",
+            "guidance_in",
+            "final_layer",
+            "pe_embedder",
+        ]
+        if self.config.compile_blocks:
+            for block in self.model.double_blocks:
+                block.compile()
+            for block in self.model.single_blocks:
+                block.compile()
+        if self.config.compile_extras:
+            for extra in to_gpu_extras:
+                getattr(self.model, extra).compile()
 
     @torch.inference_mode()
     def prepare(
@@ -608,12 +632,18 @@ class FluxPipeline:
 
     @classmethod
     def load_pipeline_from_config_path(
-        cls, path: str, flow_model_path: str = None, debug: bool = False
+        cls, path: str, flow_model_path: str = None, debug: bool = False, **kwargs
     ) -> "FluxPipeline":
         with torch.inference_mode():
             config = load_config_from_path(path)
             if flow_model_path:
                 config.ckpt_path = flow_model_path
+            for k, v in kwargs.items():
+                if hasattr(config, k):
+                    logger.info(
+                        f"Overriding config {k}:{getattr(config, k)} with value {v}"
+                    )
+                    setattr(config, k, v)
             return cls.load_pipeline_from_config(config, debug=debug)
 
     @classmethod
@@ -639,7 +669,13 @@ class FluxPipeline:
 
             if not config.prequantized_flow:
                 flow_model = quantize_flow_transformer_and_dispatch_float8(
-                    flow_model, flux_device, offload_flow=config.offload_flow
+                    flow_model,
+                    flux_device,
+                    offload_flow=config.offload_flow,
+                    swap_linears_with_cublaslinear=flux_dtype == torch.float16,
+                    flow_dtype=flux_dtype,
+                    quantize_modulation=config.quantize_modulation,
+                    quantize_flow_embedder_layers=config.quantize_flow_embedder_layers,
                 )
             else:
                 flow_model.eval().requires_grad_(False)

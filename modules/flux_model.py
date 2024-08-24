@@ -1,6 +1,10 @@
 from collections import namedtuple
 import os
+from typing import TYPE_CHECKING
 import torch
+
+if TYPE_CHECKING:
+    from util import ModelSpec
 
 DISABLE_COMPILE = os.getenv("DISABLE_COMPILE", "0") == "1"
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -13,11 +17,6 @@ import math
 from torch import Tensor, nn
 from pydantic import BaseModel
 from torch.nn import functional as F
-
-try:
-    from cublas_ops import CublasLinear
-except ImportError:
-    CublasLinear = nn.Linear
 
 
 class FluxParams(BaseModel):
@@ -116,11 +115,39 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
 
 
 class MLPEmbedder(nn.Module):
-    def __init__(self, in_dim: int, hidden_dim: int):
+    def __init__(
+        self, in_dim: int, hidden_dim: int, prequantized: bool = False, quantized=False
+    ):
+        from float8_quantize import F8Linear
+
         super().__init__()
-        self.in_layer = nn.Linear(in_dim, hidden_dim, bias=True)
+        self.in_layer = (
+            nn.Linear(in_dim, hidden_dim, bias=True)
+            if not prequantized
+            else (
+                F8Linear(
+                    in_features=in_dim,
+                    out_features=hidden_dim,
+                    bias=True,
+                )
+                if quantized
+                else nn.Linear(in_dim, hidden_dim, bias=True)
+            )
+        )
         self.silu = nn.SiLU()
-        self.out_layer = nn.Linear(hidden_dim, hidden_dim, bias=True)
+        self.out_layer = (
+            nn.Linear(hidden_dim, hidden_dim, bias=True)
+            if not prequantized
+            else (
+                F8Linear(
+                    in_features=hidden_dim,
+                    out_features=hidden_dim,
+                    bias=True,
+                )
+                if quantized
+                else nn.Linear(hidden_dim, hidden_dim, bias=True)
+            )
+        )
 
     def forward(self, x: Tensor) -> Tensor:
         return self.out_layer(self.silu(self.in_layer(x)))
@@ -148,14 +175,38 @@ class QKNorm(torch.nn.Module):
 
 
 class SelfAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int = 8, qkv_bias: bool = False):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int = 8,
+        qkv_bias: bool = False,
+        prequantized: bool = False,
+    ):
         super().__init__()
+        from float8_quantize import F8Linear
+
         self.num_heads = num_heads
         head_dim = dim // num_heads
 
-        self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
+        self.qkv = (
+            nn.Linear(dim, dim * 3, bias=qkv_bias)
+            if not prequantized
+            else F8Linear(
+                in_features=dim,
+                out_features=dim * 3,
+                bias=qkv_bias,
+            )
+        )
         self.norm = QKNorm(head_dim)
-        self.proj = nn.Linear(dim, dim)
+        self.proj = (
+            nn.Linear(dim, dim)
+            if not prequantized
+            else F8Linear(
+                in_features=dim,
+                out_features=dim,
+                bias=True,
+            )
+        )
         self.K = 3
         self.H = self.num_heads
         self.KH = self.K * self.H
@@ -178,11 +229,21 @@ ModulationOut = namedtuple("ModulationOut", ["shift", "scale", "gate"])
 
 
 class Modulation(nn.Module):
-    def __init__(self, dim: int, double: bool):
+    def __init__(self, dim: int, double: bool, quantized_modulation: bool = False):
         super().__init__()
+        from float8_quantize import F8Linear
+
         self.is_double = double
         self.multiplier = 6 if double else 3
-        self.lin = nn.Linear(dim, self.multiplier * dim, bias=True)
+        self.lin = (
+            nn.Linear(dim, self.multiplier * dim, bias=True)
+            if not quantized_modulation
+            else F8Linear(
+                in_features=dim,
+                out_features=self.multiplier * dim,
+                bias=True,
+            )
+        )
         self.act = nn.SiLU()
 
     def forward(self, vec: Tensor) -> tuple[ModulationOut, ModulationOut | None]:
@@ -202,37 +263,83 @@ class DoubleStreamBlock(nn.Module):
         mlp_ratio: float,
         qkv_bias: bool = False,
         dtype: torch.dtype = torch.float16,
+        quantized_modulation: bool = False,
+        prequantized: bool = False,
     ):
         super().__init__()
+        from float8_quantize import F8Linear
+
         self.dtype = dtype
 
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
         self.num_heads = num_heads
         self.hidden_size = hidden_size
-        self.img_mod = Modulation(hidden_size, double=True)
+        self.img_mod = Modulation(
+            hidden_size, double=True, quantized_modulation=quantized_modulation
+        )
         self.img_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.img_attn = SelfAttention(
-            dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias
+            dim=hidden_size,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            prequantized=prequantized,
         )
 
         self.img_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.img_mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_hidden_dim, bias=True),
+            (
+                nn.Linear(hidden_size, mlp_hidden_dim, bias=True)
+                if not prequantized
+                else F8Linear(
+                    in_features=hidden_size,
+                    out_features=mlp_hidden_dim,
+                    bias=True,
+                )
+            ),
             nn.GELU(approximate="tanh"),
-            nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
+            (
+                nn.Linear(mlp_hidden_dim, hidden_size, bias=True)
+                if not prequantized
+                else F8Linear(
+                    in_features=mlp_hidden_dim,
+                    out_features=hidden_size,
+                    bias=True,
+                )
+            ),
         )
 
-        self.txt_mod = Modulation(hidden_size, double=True)
+        self.txt_mod = Modulation(
+            hidden_size, double=True, quantized_modulation=quantized_modulation
+        )
         self.txt_norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.txt_attn = SelfAttention(
-            dim=hidden_size, num_heads=num_heads, qkv_bias=qkv_bias
+            dim=hidden_size,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            prequantized=prequantized,
         )
 
         self.txt_norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
         self.txt_mlp = nn.Sequential(
-            nn.Linear(hidden_size, mlp_hidden_dim, bias=True),
+            (
+                nn.Linear(hidden_size, mlp_hidden_dim, bias=True)
+                if not prequantized
+                else F8Linear(
+                    in_features=hidden_size,
+                    out_features=mlp_hidden_dim,
+                    bias=True,
+                )
+            ),
             nn.GELU(approximate="tanh"),
-            nn.Linear(mlp_hidden_dim, hidden_size, bias=True),
+            (
+                nn.Linear(mlp_hidden_dim, hidden_size, bias=True)
+                if not prequantized
+                else F8Linear(
+                    in_features=mlp_hidden_dim,
+                    out_features=hidden_size,
+                    bias=True,
+                )
+            ),
         )
         self.K = 3
         self.H = self.num_heads
@@ -301,8 +408,12 @@ class SingleStreamBlock(nn.Module):
         mlp_ratio: float = 4.0,
         qk_scale: float | None = None,
         dtype: torch.dtype = torch.float16,
+        quantized_modulation: bool = False,
+        prequantized: bool = False,
     ):
         super().__init__()
+        from float8_quantize import F8Linear
+
         self.dtype = dtype
         self.hidden_dim = hidden_size
         self.num_heads = num_heads
@@ -311,9 +422,25 @@ class SingleStreamBlock(nn.Module):
 
         self.mlp_hidden_dim = int(hidden_size * mlp_ratio)
         # qkv and mlp_in
-        self.linear1 = nn.Linear(hidden_size, hidden_size * 3 + self.mlp_hidden_dim)
+        self.linear1 = (
+            nn.Linear(hidden_size, hidden_size * 3 + self.mlp_hidden_dim)
+            if not prequantized
+            else F8Linear(
+                in_features=hidden_size,
+                out_features=hidden_size * 3 + self.mlp_hidden_dim,
+                bias=True,
+            )
+        )
         # proj and mlp_out
-        self.linear2 = nn.Linear(hidden_size + self.mlp_hidden_dim, hidden_size)
+        self.linear2 = (
+            nn.Linear(hidden_size + self.mlp_hidden_dim, hidden_size)
+            if not prequantized
+            else F8Linear(
+                in_features=hidden_size + self.mlp_hidden_dim,
+                out_features=hidden_size,
+                bias=True,
+            )
+        )
 
         self.norm = QKNorm(head_dim)
 
@@ -321,7 +448,11 @@ class SingleStreamBlock(nn.Module):
         self.pre_norm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
 
         self.mlp_act = nn.GELU(approximate="tanh")
-        self.modulation = Modulation(hidden_size, double=False)
+        self.modulation = Modulation(
+            hidden_size,
+            double=False,
+            quantized_modulation=quantized_modulation and prequantized,
+        )
 
         self.K = 3
         self.H = self.num_heads
@@ -350,11 +481,11 @@ class LastLayer(nn.Module):
     def __init__(self, hidden_size: int, patch_size: int, out_channels: int):
         super().__init__()
         self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = CublasLinear(
+        self.linear = nn.Linear(
             hidden_size, patch_size * patch_size * out_channels, bias=True
         )
         self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), CublasLinear(hidden_size, 2 * hidden_size, bias=True)
+            nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
     def forward(self, x: Tensor, vec: Tensor) -> Tensor:
@@ -369,50 +500,96 @@ class Flux(nn.Module):
     Transformer model for flow matching on sequences.
     """
 
-    def __init__(self, params: FluxParams, dtype: torch.dtype = torch.float16):
+    def __init__(self, config: "ModelSpec", dtype: torch.dtype = torch.float16):
         super().__init__()
 
         self.dtype = dtype
-        self.params = params
-        self.in_channels = params.in_channels
+        self.params = config.params
+        self.in_channels = config.params.in_channels
         self.out_channels = self.in_channels
-        if params.hidden_size % params.num_heads != 0:
+        prequantized_flow = config.prequantized_flow
+        quantized_embedders = config.quantize_flow_embedder_layers and prequantized_flow
+        quantized_modulation = config.quantize_modulation and prequantized_flow
+        from float8_quantize import F8Linear
+
+        if config.params.hidden_size % config.params.num_heads != 0:
             raise ValueError(
-                f"Hidden size {params.hidden_size} must be divisible by num_heads {params.num_heads}"
+                f"Hidden size {config.params.hidden_size} must be divisible by num_heads {config.params.num_heads}"
             )
-        pe_dim = params.hidden_size // params.num_heads
-        if sum(params.axes_dim) != pe_dim:
+        pe_dim = config.params.hidden_size // config.params.num_heads
+        if sum(config.params.axes_dim) != pe_dim:
             raise ValueError(
-                f"Got {params.axes_dim} but expected positional dim {pe_dim}"
+                f"Got {config.params.axes_dim} but expected positional dim {pe_dim}"
             )
-        self.hidden_size = params.hidden_size
-        self.num_heads = params.num_heads
+        self.hidden_size = config.params.hidden_size
+        self.num_heads = config.params.num_heads
         self.pe_embedder = EmbedND(
             dim=pe_dim,
-            theta=params.theta,
-            axes_dim=params.axes_dim,
+            theta=config.params.theta,
+            axes_dim=config.params.axes_dim,
             dtype=self.dtype,
         )
-        self.img_in = nn.Linear(self.in_channels, self.hidden_size, bias=True)
-        self.time_in = MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size)
-        self.vector_in = MLPEmbedder(params.vec_in_dim, self.hidden_size)
+        self.img_in = (
+            nn.Linear(self.in_channels, self.hidden_size, bias=True)
+            if not prequantized_flow
+            else (
+                F8Linear(
+                    in_features=self.in_channels,
+                    out_features=self.hidden_size,
+                    bias=True,
+                )
+                if quantized_embedders
+                else nn.Linear(self.in_channels, self.hidden_size, bias=True)
+            )
+        )
+        self.time_in = MLPEmbedder(
+            in_dim=256,
+            hidden_dim=self.hidden_size,
+            prequantized=prequantized_flow,
+            quantized=quantized_embedders,
+        )
+        self.vector_in = MLPEmbedder(
+            config.params.vec_in_dim,
+            self.hidden_size,
+            prequantized=prequantized_flow,
+            quantized=quantized_embedders,
+        )
         self.guidance_in = (
-            MLPEmbedder(in_dim=256, hidden_dim=self.hidden_size)
-            if params.guidance_embed
+            MLPEmbedder(
+                in_dim=256,
+                hidden_dim=self.hidden_size,
+                prequantized=prequantized_flow,
+                quantized=quantized_embedders,
+            )
+            if config.params.guidance_embed
             else nn.Identity()
         )
-        self.txt_in = nn.Linear(params.context_in_dim, self.hidden_size)
+        self.txt_in = (
+            nn.Linear(config.params.context_in_dim, self.hidden_size)
+            if not quantized_embedders
+            else (
+                F8Linear(
+                    in_features=config.params.context_in_dim,
+                    out_features=self.hidden_size,
+                    bias=True,
+                )
+                if quantized_embedders
+                else nn.Linear(config.params.context_in_dim, self.hidden_size)
+            )
+        )
 
         self.double_blocks = nn.ModuleList(
             [
                 DoubleStreamBlock(
                     self.hidden_size,
                     self.num_heads,
-                    mlp_ratio=params.mlp_ratio,
-                    qkv_bias=params.qkv_bias,
+                    mlp_ratio=config.params.mlp_ratio,
+                    qkv_bias=config.params.qkv_bias,
                     dtype=self.dtype,
+                    quantized_modulation=quantized_modulation,
+                    prequantized=prequantized_flow,
                 )
-                for _ in range(params.depth)
+                for _ in range(config.params.depth)
             ]
         )
 
@@ -421,10 +598,12 @@ class Flux(nn.Module):
                 SingleStreamBlock(
                     self.hidden_size,
                     self.num_heads,
-                    mlp_ratio=params.mlp_ratio,
+                    mlp_ratio=config.params.mlp_ratio,
                     dtype=self.dtype,
+                    quantized_modulation=quantized_modulation,
+                    prequantized=prequantized_flow,
                 )
-                for _ in range(params.depth_single_blocks)
+                for _ in range(config.params.depth_single_blocks)
             ]
         )
 
@@ -477,13 +656,17 @@ class Flux(nn.Module):
         return img
 
     @classmethod
-    def from_pretrained(cls, path: str, dtype: torch.dtype = torch.bfloat16) -> "Flux":
+    def from_pretrained(
+        cls: "Flux", path: str, dtype: torch.dtype = torch.float16
+    ) -> "Flux":
         from util import load_config_from_path
         from safetensors.torch import load_file
 
         config = load_config_from_path(path)
         with torch.device("meta"):
-            klass = cls(params=config.params, dtype=dtype).type(dtype)
+            klass = cls(config=config, dtype=dtype)
+            if not config.prequantized_flow:
+                klass.type(dtype)
 
         ckpt = load_file(config.ckpt_path, device="cpu")
         klass.load_state_dict(ckpt, assign=True)
