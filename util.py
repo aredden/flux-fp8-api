@@ -93,6 +93,8 @@ def parse_device(device: str | torch.device | None) -> torch.device:
 
 
 def into_dtype(dtype: str) -> torch.dtype:
+    if isinstance(dtype, torch.dtype):
+        return dtype
     if dtype == "float16":
         return torch.float16
     elif dtype == "bfloat16":
