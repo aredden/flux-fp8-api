@@ -424,28 +424,28 @@ def quantize_flow_transformer_and_dispatch_float8(
             continue
         m_extra.to(device)
         m_extra.eval()
-        if (
-            isinstance(m_extra, nn.Linear)
-            and not isinstance(m_extra, (F8Linear, CublasLinear))
-            and quantize_flow_embedder_layers
+        if isinstance(m_extra, nn.Linear) and not isinstance(
+            m_extra, (F8Linear, CublasLinear)
         ):
-            setattr(
-                flow_model,
-                module,
-                F8Linear.from_linear(
+            if quantize_flow_embedder_layers:
+                setattr(
+                    flow_model,
+                    module,
+                    F8Linear.from_linear(
+                        m_extra,
+                        float8_dtype=float8_dtype,
+                        input_float8_dtype=input_float8_dtype,
+                    ),
+                )
+            del m_extra
+        elif module != "final_layer":
+            if quantize_flow_embedder_layers:
+                recursive_swap_linears(
                     m_extra,
                     float8_dtype=float8_dtype,
                     input_float8_dtype=input_float8_dtype,
-                ),
-            )
-            del m_extra
-        elif module != "final_layer" and not quantize_flow_embedder_layers:
-            recursive_swap_linears(
-                m_extra,
-                float8_dtype=float8_dtype,
-                input_float8_dtype=input_float8_dtype,
-                quantize_modulation=quantize_modulation,
-            )
+                    quantize_modulation=quantize_modulation,
+                )
         torch.cuda.empty_cache()
     if swap_linears_with_cublaslinear and flow_dtype == torch.float16:
         swap_to_cublaslinear(flow_model)

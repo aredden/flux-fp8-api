@@ -56,6 +56,16 @@ class HFEmbedder(nn.Module):
         self.max_length = max_length
         self.output_key = "pooler_output" if self.is_clip else "last_hidden_state"
 
+        auto_quant_config = (
+            auto_quantization_config(quantization_dtype) if quantization_dtype else None
+        )
+
+        # BNB will move to cuda:0 by default if not specified
+        if isinstance(auto_quant_config, BitsAndBytesConfig):
+            hf_kwargs["device_map"] = {"": self.device.index}
+        if auto_quant_config is not None:
+            hf_kwargs["quantization_config"] = auto_quant_config
+
         if self.is_clip:
             self.tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(
                 version, max_length=max_length
@@ -64,11 +74,6 @@ class HFEmbedder(nn.Module):
             self.hf_module: CLIPTextModel = CLIPTextModel.from_pretrained(
                 version,
                 **hf_kwargs,
-                quantization_config=(
-                    auto_quantization_config(quantization_dtype)
-                    if quantization_dtype
-                    else None
-                ),
             )
 
         else:
@@ -78,11 +83,6 @@ class HFEmbedder(nn.Module):
             self.hf_module: T5EncoderModel = T5EncoderModel.from_pretrained(
                 version,
                 **hf_kwargs,
-                quantization_config=(
-                    auto_quantization_config(quantization_dtype)
-                    if quantization_dtype
-                    else None
-                ),
             )
 
     def offload(self):

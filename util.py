@@ -6,7 +6,6 @@ import torch
 from modules.autoencoder import AutoEncoder, AutoEncoderParams
 from modules.conditioner import HFEmbedder
 from modules.flux_model import Flux, FluxParams
-from modules.flux_model_f8 import Flux as FluxF8
 from safetensors.torch import load_file as load_sft
 
 try:
@@ -68,7 +67,7 @@ class ModelSpec(BaseModel):
     # Improved precision via not quanitzing the modulation linear layers
     quantize_modulation: bool = True
     # Improved precision via not quanitzing the flow embedder layers
-    quantize_flow_embedder_layers: bool = True
+    quantize_flow_embedder_layers: bool = False
 
     model_config: ConfigDict = {
         "arbitrary_types_allowed": True,
@@ -230,16 +229,14 @@ def print_load_warning(missing: list[str], unexpected: list[str]) -> None:
         )
 
 
-def load_flow_model(config: ModelSpec) -> Flux | FluxF8:
+def load_flow_model(config: ModelSpec) -> Flux:
     ckpt_path = config.ckpt_path
     FluxClass = Flux
-    if config.prequantized_flow:
-        FluxClass = FluxF8
 
     with torch.device("meta"):
-        model = FluxClass(config.params, dtype=into_dtype(config.flow_dtype)).type(
-            into_dtype(config.flow_dtype)
-        )
+        model = FluxClass(config, dtype=into_dtype(config.flow_dtype))
+        if not config.prequantized_flow:
+            model.type(into_dtype(config.flow_dtype))
 
     if ckpt_path is not None:
         # load_sft doesn't support torch.device
@@ -290,7 +287,7 @@ def load_autoencoder(config: ModelSpec) -> AutoEncoder:
 
 
 class LoadedModels(BaseModel):
-    flow: Flux | FluxF8
+    flow: Flux
     ae: AutoEncoder
     clip: HFEmbedder
     t5: HFEmbedder
