@@ -41,6 +41,19 @@ Note:
 -   [Examples](#examples)
 -   [License](#license)
 
+### Updates 08/24/24
+
+-   Add config options for levels of quantization for the flow transformer:
+    -   `quantize_modulation`: Quantize the modulation layers in the flow model. If false, adds ~2GB vram usage for moderate precision improvements `(default: true)`
+    -   `quantize_flow_embedder_layers`: Quantize the flow embedder layers in the flow model. If false, adds ~512MB vram usage, but precision improves considerably. `(default: false)`
+-   Override default config values when loading FluxPipeline, e.g. `FluxPipeline.load_pipeline_from_config_path(config_path, **config_overrides)`
+
+#### Fixes
+
+-   Fix bug where loading text encoder from HF with bnb will error if device is not set to cuda:0
+
+**note:** prequantized flow models will only work with the specified quantization levels as when they were created. e.g. if you create a prequantized flow model with `quantize_modulation` set to false, it will only work with `quantize_modulation` set to false, same with `quantize_flow_embedder_layers`.
+
 ## Installation
 
 This repo _requires_ at least pytorch with cuda=12.4 and an ADA gpu with fp8 support, otherwise `torch._scaled_mm` will throw a CUDA error saying it's not supported. To install with conda/mamba:
@@ -106,30 +119,8 @@ python main.py --config-path <path_to_config> --port <port_number> --host <host_
 -   `--no-offload-ae`: Disable offloading the autoencoder to the CPU when not being used to increase e2e inference speed (default: True [implies it will offload, setting this flag sets it to False]).
 -   `--no-offload-text-enc`: Disable offloading the text encoder to the CPU when not being used to increase e2e inference speed (default: True [implies it will offload, setting this flag sets it to False]).
 -   `--prequantized-flow`: Load the flow model from a prequantized checkpoint, which reduces the size of the checkpoint by about 50% & reduces startup time (default: False).
-
-## Examples
-
-### Running the Server
-
-```bash
-python main.py --config-path configs/config-dev-1-4090.json --port 8088 --host 0.0.0.0
-```
-
-Or if you need more granular control over the all of the settings, you can run the server with something like this:
-
-```bash
-python main.py --port 8088 --host 0.0.0.0 \
-    --flow-model-path /path/to/your/flux1-dev.sft \
-    --text-enc-path /path/to/your/t5-v1_1-xxl-encoder-bf16 \
-    --autoencoder-path /path/to/your/ae.sft \
-    --model-version flux-dev \
-    --flux-device cuda:0 \
-    --text-enc-device cuda:0 \
-    --autoencoder-device cuda:0 \
-    --compile \
-    --quant-text-enc qfloat8 \
-    --quant-ae
-```
+-   `--no-quantize-flow-modulation`: Disable quantization of the modulation layers in the flow transformer, which improves precision _moderately_ but adds ~2GB vram usage.
+-   `--quantize-flow-embedder-layers`: Quantize the flow embedder layers in the flow transformer, reduces precision _considerably_ but saves ~512MB vram usage.
 
 ## Configuration
 
@@ -185,7 +176,10 @@ Example configuration file for a single 4090 (`configs/config-dev-offload-1-4090
     "compile_blocks": true, // compile the single-blocks and double-blocks
     "offload_text_encoder": true, // offload the text encoder to cpu when not in use
     "offload_vae": true, // offload the autoencoder to cpu when not in use
-    "offload_flow": false // offload the flow transformer to cpu when not in use
+    "offload_flow": false, // offload the flow transformer to cpu when not in use
+    "prequantized_flow": false, // load the flow transformer from a prequantized checkpoint, which reduces the size of the checkpoint by about 50% & reduces startup time (default: false)
+    "quantize_modulation": true, // quantize the modulation layers in the flow transformer, which reduces precision moderately but saves ~2GB vram usage (default: true)
+    "quantize_flow_embedder_layers": false, // quantize the flow embedder layers in the flow transformer, if false, improves precision considerably at the cost of adding ~512MB vram usage (default: false)
 }
 ```
 
@@ -232,6 +226,17 @@ Other things to change can be the
 -   `"ae_device": "cuda:0",`
     device for autoencoder (default: cuda:0) - set this to a different device - e.g. `"cuda:1"` if you have multiple gpus so you can set offloading for ae to false, does not need to be the same as flux_device or text_enc_device
 
+-   `"prequantized_flow": false,`
+    load the flow transformer from a prequantized checkpoint, which reduces the size of the checkpoint by about 50% & reduces startup time (default: false)
+
+        - Note: MUST be a prequantized checkpoint created with the same quantization settings as the current config, and must have been quantized using this repo.
+
+-   `"quantize_modulation": true,`
+    quantize the modulation layers in the flow transformer, which improves precision at the cost of adding ~2GB vram usage (default: true)
+
+-   `"quantize_flow_embedder_layers": false,`
+    quantize the flow embedder layers in the flow transformer, which improves precision considerably at the cost of adding ~512MB vram usage (default: false)
+
 ## API Endpoints
 
 ### Generate Image
@@ -256,10 +261,10 @@ Other things to change can be the
 ### Running the Server
 
 ```bash
-python main.py --config-path configs/config-dev-offload-1-4090.json --port 8088 --host 0.0.0.0
+python main.py --config-path configs/config-dev-1-4090.json --port 8088 --host 0.0.0.0
 ```
 
-OR, if you need more granular control over the server, you can run the server with something like this:
+Or if you need more granular control over the all of the settings, you can run the server with something like this:
 
 ```bash
 python main.py --port 8088 --host 0.0.0.0 \
@@ -275,7 +280,7 @@ python main.py --port 8088 --host 0.0.0.0 \
     --quant-ae
 ```
 
-### Generating an Image
+### Generating an image on a client
 
 Send a POST request to `http://<host>:<port>/generate` with the following JSON body:
 
