@@ -608,12 +608,18 @@ class FluxPipeline:
 
     @classmethod
     def load_pipeline_from_config_path(
-        cls, path: str, flow_model_path: str = None, debug: bool = False
+        cls, path: str, flow_model_path: str = None, debug: bool = False, **kwargs
     ) -> "FluxPipeline":
         with torch.inference_mode():
             config = load_config_from_path(path)
             if flow_model_path:
                 config.ckpt_path = flow_model_path
+            for k, v in kwargs.items():
+                if hasattr(config, k):
+                    logger.info(
+                        f"Overriding config {k}:{getattr(config, k)} with value {v}"
+                    )
+                    setattr(config, k, v)
             return cls.load_pipeline_from_config(config, debug=debug)
 
     @classmethod
