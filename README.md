@@ -54,6 +54,25 @@ Note:
 
 **note:** prequantized flow models will only work with the specified quantization levels as when they were created. e.g. if you create a prequantized flow model with `quantize_modulation` set to false, it will only work with `quantize_modulation` set to false, same with `quantize_flow_embedder_layers`.
 
+### Updates 08/25/24
+
+-   Added LoRA loading functionality to FluxPipeline. Simple example:
+
+```python
+from flux_pipeline import FluxPipeline
+
+config_path = "path/to/config/file.json"
+config_overrides = {
+    #...
+}
+
+lora_path = "path/to/lora/file.safetensors"
+
+pipeline = FluxPipeline.load_pipeline_from_config_path(config_path, **config_overrides)
+
+pipeline.load_lora(lora_path, scale=1.0)
+```
+
 ## Installation
 
 This repo _requires_ at least pytorch with cuda=12.4 and an ADA gpu with fp8 support, otherwise `torch._scaled_mm` will throw a CUDA error saying it's not supported. To install with conda/mamba:

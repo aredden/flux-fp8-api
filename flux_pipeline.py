@@ -1,17 +1,18 @@
 import io
 import math
 import random
-from typing import TYPE_CHECKING, Callable, List
-from PIL import Image
-import numpy as np
 import warnings
+from typing import TYPE_CHECKING, Callable, List
+
+import numpy as np
+from PIL import Image
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 import torch
-
 from einops import rearrange
+
 from flux_emphasis import get_weighted_text_embeddings_flux
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -19,16 +20,20 @@ torch.backends.cudnn.allow_tf32 = True
 torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.benchmark_limit = 20
 torch.set_float32_matmul_precision("high")
+from pybase64 import standard_b64decode
 from torch._dynamo import config
 from torch._inductor import config as ind_config
-from pybase64 import standard_b64decode
 
 config.cache_size_limit = 10000000000
 ind_config.shape_padding = True
+import platform
+
 from loguru import logger
-from image_encoder import ImageEncoder
 from torchvision.transforms import functional as TF
 from tqdm import tqdm
+
+import lora_loading
+from image_encoder import ImageEncoder
 from util import (
     ModelSpec,
     ModelVersion,
@@ -37,7 +42,6 @@ from util import (
     load_config_from_path,
     load_models_from_config,
 )
-import platform
 
 if platform.system() == "Windows":
     MAX_RAND = 2**16 - 1
@@ -46,9 +50,9 @@ else:
 
 
 if TYPE_CHECKING:
+    from modules.autoencoder import AutoEncoder
     from modules.conditioner import HFEmbedder
     from modules.flux_model import Flux
-    from modules.autoencoder import AutoEncoder
 
 
 class FluxPipeline:
@@ -143,6 +147,20 @@ class FluxPipeline:
             np.random.seed(seed)
             random.seed(seed)
         return cuda_generator, seed
+
+    def load_lora(self, lora_path: str, scale: float):
+        """
+        Loads a LoRA checkpoint into the Flux flow transformer.
+
+        Currently supports LoRA checkpoints from either diffusers checkpoints which usually start with transformer.[...],
+        or loras which contain keys which start with lora_unet_[...].
+
+        Args:
+            lora_path (str): Path to the LoRA checkpoint.
+            scale (float): Scaling factor for the LoRA weights.
+
+        """
+        self.model = lora_loading.apply_lora_to_model(self.model, lora_path, scale)
 
     @torch.inference_mode()
     def compile(self):
