@@ -430,10 +430,7 @@ def apply_lora_to_model(model: Flux, lora_path: str, lora_scale: float = 1.0):
             weight_f16 = module.weight.clone().detach().float()
         lora_sd = get_lora_for_key(key, lora_weights)
         weight_f16 = apply_lora_weight_to_module(
-            weight_f16,
-            lora_sd,
-            lora_scale=lora_scale,
-            from_original_flux=from_original_flux,
+            weight_f16, lora_sd, lora_scale=lora_scale
         )
         if weight_is_f8:
             module.set_weight_tensor(weight_f16.type(dtype))
