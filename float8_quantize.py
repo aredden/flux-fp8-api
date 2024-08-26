@@ -447,7 +447,11 @@ def quantize_flow_transformer_and_dispatch_float8(
                     quantize_modulation=quantize_modulation,
                 )
         torch.cuda.empty_cache()
-    if swap_linears_with_cublaslinear and flow_dtype == torch.float16:
+    if (
+        swap_linears_with_cublaslinear
+        and flow_dtype == torch.float16
+        and isinstance(CublasLinear, type(torch.nn.Linear))
+    ):
         swap_to_cublaslinear(flow_model)
     elif swap_linears_with_cublaslinear and flow_dtype != torch.float16:
         logger.warning("Skipping cublas linear swap because flow_dtype is not float16")

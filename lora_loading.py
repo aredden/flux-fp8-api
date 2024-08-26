@@ -1,9 +1,12 @@
 import torch
-from cublas_ops import CublasLinear
 from loguru import logger
 from safetensors.torch import load_file
 from tqdm import tqdm
 
+try:
+    from cublas_ops import CublasLinear
+except Exception as e:
+    CublasLinear = type(None)
 from float8_quantize import F8Linear
 from modules.flux_model import Flux
 
@@ -383,7 +386,7 @@ def apply_lora_weight_to_module(
 
 
 @torch.inference_mode()
-def apply_lora_to_model(model: Flux, lora_path: str, lora_scale: float = 1.0):
+def apply_lora_to_model(model: Flux, lora_path: str, lora_scale: float = 1.0) -> Flux:
     has_guidance = model.params.guidance_embed
     logger.info(f"Loading LoRA weights for {lora_path}")
     lora_weights = load_file(lora_path)
@@ -408,8 +411,6 @@ def apply_lora_to_model(model: Flux, lora_path: str, lora_scale: float = 1.0):
     ]
     logger.debug("Keys extracted")
     keys_without_ab = list(set(keys_without_ab))
-    if len(keys_without_ab) > 0:
-        logger.warning("Missing unconverted state dict keys!", len(keys_without_ab))
 
     for key in tqdm(keys_without_ab, desc="Applying LoRA", total=len(keys_without_ab)):
         module = get_module_for_key(key, model)
