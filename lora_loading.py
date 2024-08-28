@@ -341,7 +341,7 @@ def get_lora_for_key(key: str, lora_weights: dict):
     prefix = key.split(".lora")[0]
     lora_A = lora_weights[f"{prefix}.lora_A.weight"]
     lora_B = lora_weights[f"{prefix}.lora_B.weight"]
-    alpha = lora_weights.get(f"{prefix}.alpha", 1.0)
+    alpha = lora_weights.get(f"{prefix}.alpha", None)
     return lora_A, lora_B, alpha
 
 
