@@ -336,7 +336,7 @@ def recursive_swap_linears(
 
 @torch.inference_mode()
 def swap_to_cublaslinear(model: nn.Module):
-    if not isinstance(CublasLinear, torch.nn.Module):
+    if not isinstance(CublasLinear, type(torch.nn.Module)):
         return
     for name, child in model.named_children():
         if isinstance(child, nn.Linear) and not isinstance(
