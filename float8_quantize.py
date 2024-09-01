@@ -125,7 +125,7 @@ class F8Linear(nn.Module):
             ) and sd["weight"] == torch.zeros_like(sd["weight"]):
                 w = sd["weight"]
                 # Set the init values as if it's already quantized float8_data
-                self.float8_data = sd["float8_data"]
+                self._buffers["float8_data"] = sd["float8_data"]
                 self._parameters["weight"] = nn.Parameter(
                     torch.zeros(
                         1,
@@ -156,6 +156,31 @@ class F8Linear(nn.Module):
                     self.input_scale_reciprocal = sd["input_scale_reciprocal"].float()
                     self.input_scale_initialized = True
                     self.trial_index = self.num_scale_trials
+                elif "scale" in sd and "scale_reciprocal" in sd:
+                    self.scale = sd["scale"].float()
+                    self.input_scale = (
+                        sd["input_scale"].float() if "input_scale" in sd else None
+                    )
+                    self.scale_reciprocal = sd["scale_reciprocal"].float()
+                    self.input_scale_reciprocal = (
+                        sd["input_scale_reciprocal"].float()
+                        if "input_scale_reciprocal" in sd
+                        else None
+                    )
+                    self.input_scale_initialized = (
+                        True if "input_scale" in sd else False
+                    )
+                    self.trial_index = (
+                        self.num_scale_trials if "input_scale" in sd else 0
+                    )
+                    self.input_amax_trials = torch.zeros(
+                        self.num_scale_trials,
+                        requires_grad=False,
+                        dtype=torch.float32,
+                        device=self.weight.device,
+                    )
+                    self.input_scale_initialized = False
+                    self.trial_index = 0
                 else:
                     # If scales are not initialized, reset trials
                     self.input_scale_initialized = False
@@ -292,6 +317,7 @@ def recursive_swap_linears(
     float8_dtype=torch.float8_e4m3fn,
     input_float8_dtype=torch.float8_e5m2,
     quantize_modulation: bool = True,
+    ignore_keys: list[str] = [],
 ) -> None:
     """
     Recursively swaps all nn.Linear modules in the given model with F8Linear modules.
@@ -309,6 +335,8 @@ def recursive_swap_linears(
         all linear layers in the model will be using 8-bit quantization.
     """
     for name, child in model.named_children():
+        if name in ignore_keys:
+            continue
         if isinstance(child, Modulation) and not quantize_modulation:
             continue
         if isinstance(child, nn.Linear) and not isinstance(
@@ -331,6 +359,7 @@ def recursive_swap_linears(
                 float8_dtype=float8_dtype,
                 input_float8_dtype=input_float8_dtype,
                 quantize_modulation=quantize_modulation,
+                ignore_keys=ignore_keys,
             )
 
 
