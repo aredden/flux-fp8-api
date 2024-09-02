@@ -1,11 +1,6 @@
 from loguru import logger
 import torch
 import torch.nn as nn
-from torchao.float8.float8_utils import (
-    amax_to_scale,
-    tensor_to_amax,
-    to_fp8_saturated,
-)
 from torch.nn import init
 import math
 from torch.compiler import is_compiling
@@ -200,42 +195,55 @@ class F8Linear(nn.Module):
     def quantize_weight(self):
         if self.weight_initialized:
             return
-        amax = tensor_to_amax(self.weight.data)
-        scale = amax_to_scale(amax, self.float8_dtype, self.weight.dtype)
-        self.float8_data = to_fp8_saturated(self.weight.data * scale, self.float8_dtype)
-        self.scale = scale.float()
-        self.weight_initialized = True
-        self.scale_reciprocal = self.scale.reciprocal().float()
+        amax = torch.max(torch.abs(self.weight.data)).float()
+        self.scale = self.amax_to_scale(amax, self.max_value)
+        self.float8_data = self.to_fp8_saturated(
+            self.weight.data, self.scale, self.max_value
+        ).to(self.float8_dtype)
+        self.scale_reciprocal = self.scale.reciprocal()
         self.weight.data = torch.zeros(
             1, dtype=self.weight.dtype, device=self.weight.device, requires_grad=False
         )
+        self.weight_initialized = True
 
     def set_weight_tensor(self, tensor: torch.Tensor):
         self.weight.data = tensor
         self.weight_initialized = False
         self.quantize_weight()
 
+    def amax_to_scale(self, amax, max_val):
+        return (max_val / torch.clamp(amax, min=1e-12)).clamp(max=max_val)
+
+    def to_fp8_saturated(self, x, scale, max_val):
+        return (x * scale).clamp(-max_val, max_val)
+
     def quantize_input(self, x: torch.Tensor):
         if self.input_scale_initialized:
-            return to_fp8_saturated(x * self.input_scale, self.input_float8_dtype)
+            return self.to_fp8_saturated(x, self.input_scale, self.input_max_value).to(
+                self.input_float8_dtype
+            )
         elif self.trial_index < self.num_scale_trials:
-            amax = tensor_to_amax(x)
+
+            amax = torch.max(torch.abs(x)).float()
+
             self.input_amax_trials[self.trial_index] = amax
             self.trial_index += 1
-            self.input_scale = amax_to_scale(
-                self.input_amax_trials[: self.trial_index].max(),
-                self.input_float8_dtype,
-                self.weight.dtype,
+            self.input_scale = self.amax_to_scale(
+                self.input_amax_trials[: self.trial_index].max(), self.input_max_value
             )
             self.input_scale_reciprocal = self.input_scale.reciprocal()
-            return to_fp8_saturated(x * self.input_scale, self.input_float8_dtype)
+            return self.to_fp8_saturated(x, self.input_scale, self.input_max_value).to(
+                self.input_float8_dtype
+            )
         else:
-            self.input_scale = amax_to_scale(
-                self.input_amax_trials.max(), self.input_float8_dtype, self.weight.dtype
+            self.input_scale = self.amax_to_scale(
+                self.input_amax_trials.max(), self.input_max_value
             )
             self.input_scale_reciprocal = self.input_scale.reciprocal()
             self.input_scale_initialized = True
-            return to_fp8_saturated(x * self.input_scale, self.input_float8_dtype)
+            return self.to_fp8_saturated(x, self.input_scale, self.input_max_value).to(
+                self.input_float8_dtype
+            )
 
     def reset_parameters(self) -> None:
         if self.weight_initialized:
@@ -263,10 +271,8 @@ class F8Linear(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.input_scale_initialized or is_compiling():
-            x = (
-                x.mul(self.input_scale)
-                .clamp(min=-self.input_max_value, max=self.input_max_value)
-                .type(self.input_float8_dtype)
+            x = self.to_fp8_saturated(x, self.input_scale, self.input_max_value).to(
+                self.input_float8_dtype
             )
         else:
             x = self.quantize_input(x)
