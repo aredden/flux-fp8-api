@@ -11,12 +11,10 @@ Note:
 -   The "compile blocks & extras" refers to the option within this repo setting the config values `"compile_blocks" true` & `"compile_extras": true`. ❌ means both were set to false, ✅ means both were set to true.
 -   All generations which including a ❌ or ✅ are using this repo.
 
-
 | Resolution | Device     | Test                       | Average it/s |
 | ---------- | ---------- | -------------------------- | ------------ |
 | 1024x1024  | RTX4090    | bfl codebase fp8 wo quant  | 1.7          |
 | 1024x1024  | RTX4090    | ❌ compile blocks & extras | 2.55         |
-| 1024x1024  | RTX4090    | ✅ compile blocks & extras | 3.51         |
 | 1024x1024  | RTX4090    | ✅ compile blocks & extras | 3.51         |
 | 1024x1024  | RTX6000ADA | bfl codebase               | 1.74         |
 | 1024x1024  | RTX6000ADA | ❌ compile blocks & extras | 2.08         |
