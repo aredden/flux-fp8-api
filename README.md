@@ -19,18 +19,24 @@ Note:
 | 1024x1024  | RTX6000ADA | bfl codebase               | 1.74         |
 | 1024x1024  | RTX6000ADA | ❌ compile blocks & extras | 2.08         |
 | 1024x1024  | RTX6000ADA | ✅ compile blocks & extras | 2.8          |
+| 1024x1024  | H100       | ❌ compile blocks & extras | 6.1          |
+| 1024x1024  | H100       | ✅ compile blocks & extras | 11.5         |
 | 768x768    | RTX4090    | bfl codebase fp8 wo quant  | 2.32         |
 | 768x768    | RTX4090    | ❌ compile blocks & extras | 4.47         |
 | 768x768    | RTX4090    | ✅ compile blocks & extras | 6.2          |
 | 768x768    | RTX6000ADA | bfl codebase               | 3.01         |
 | 768x768    | RTX6000ADA | ❌ compile blocks & extras | 3.43         |
 | 768x768    | RTX6000ADA | ✅ compile blocks & extras | 4.46         |
+| 768x768    | H100       | ❌ compile blocks & extras | 10.3         |
+| 768x768    | H100       | ✅ compile blocks & extras | 20.8         |
 | 1024x720   | RTX4090    | bfl codebase fp8 wo quant  | 3.01         |
 | 1024x720   | RTX4090    | ❌ compile blocks & extras | 3.6          |
 | 1024x720   | RTX4090    | ✅ compile blocks & extras | 4.96         |
 | 1024x720   | RTX6000ADA | bfl codebase               | 2.37         |
 | 1024x720   | RTX6000ADA | ❌ compile blocks & extras | 2.87         |
 | 1024x720   | RTX6000ADA | ✅ compile blocks & extras | 3.78         |
+| 1024x720   | H100       | ❌ compile blocks & extras | 8.2          |
+| 1024x720   | H100       | ✅ compile blocks & extras | 15.7         |
 
 ## Table of Contents
 
