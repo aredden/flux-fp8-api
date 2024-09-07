@@ -45,7 +45,7 @@ Note:
 -   [Configuration](#configuration)
 -   [API Endpoints](#api-endpoints)
 -   [Examples](#examples)
--   [License](#license)
+-   [License](https://github.com/aredden/flux-fp8-api/blob/main/LICENSE)
 
 ### Updates 08/24/24
 
