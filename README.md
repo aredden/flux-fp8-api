@@ -79,6 +79,13 @@ pipeline = FluxPipeline.load_pipeline_from_config_path(config_path, **config_ove
 pipeline.load_lora(lora_path, scale=1.0)
 ```
 
+### Updates 09/07/24
+
+-   Improve quality by ensuring that the RMSNorm layers use fp32
+-   Raise the clamp range for single blocks & double blocks to +/-32000 to reduce deviation from expected outputs.
+-   Make BF16 _not_ clamp, which improves quality and isn't needed because bf16 is the expected dtype for flux. **I would now recommend always using `"flow_dtype": "bfloat16"` in the config**, though it will slow things down on consumer gpus- but not by much at all since most of the compute still happens via fp8.
+-   Allow for the T5 Model to be run without any quantization, by specifying `"text_enc_quantization_dtype": "bfloat16"` in the config - or also `"float16"`, though not recommended since t5 deviates a bit when running with float16. I noticed that even with qint8/qfloat8 there is a bit of deviation from bf16 text encoder outputs- so for those who want more accurate / expected text encoder outputs, you can use this option.
+
 ## Installation
 
 This repo _requires_ at least pytorch with cuda=12.4 and an ADA gpu with fp8 support, otherwise `torch._scaled_mm` will throw a CUDA error saying it's not supported. To install with conda/mamba:

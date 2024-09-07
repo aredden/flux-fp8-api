@@ -31,7 +31,8 @@ class QuantizationDtype(StrEnum):
     qint2 = "qint2"
     qint4 = "qint4"
     qint8 = "qint8"
-
+    bfloat16 = "bfloat16"
+    float16 = "float16"
 
 class ModelSpec(BaseModel):
     version: ModelVersion

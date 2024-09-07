@@ -159,7 +159,7 @@ class RMSNorm(torch.nn.Module):
         self.scale = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: Tensor):
-        return F.rms_norm(x, self.scale.shape, self.scale, eps=1e-6)
+        return F.rms_norm(x.float(), self.scale.shape, self.scale, eps=1e-6).to(x)
 
 
 class QKNorm(torch.nn.Module):
@@ -344,7 +344,7 @@ class DoubleStreamBlock(nn.Module):
         self.K = 3
         self.H = self.num_heads
         self.KH = self.K * self.H
-
+        self.do_clamp = dtype == torch.float16
     def rearrange_for_norm(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         B, L, D = x.shape
         q, k, v = x.reshape(B, L, self.K, self.H, D // self.KH).permute(2, 0, 3, 1, 4)
@@ -384,14 +384,16 @@ class DoubleStreamBlock(nn.Module):
         img = img + img_mod1.gate * self.img_attn.proj(img_attn)
         img = img + img_mod2.gate * self.img_mlp(
             (1 + img_mod2.scale) * self.img_norm2(img) + img_mod2.shift
-        ).clamp(min=-384 * 2, max=384 * 2)
+        )
 
         # calculate the txt bloks
         txt = txt + txt_mod1.gate * self.txt_attn.proj(txt_attn)
         txt = txt + txt_mod2.gate * self.txt_mlp(
             (1 + txt_mod2.scale) * self.txt_norm2(txt) + txt_mod2.shift
-        ).clamp(min=-384 * 2, max=384 * 2)
-
+        )
+        if self.do_clamp:
+            img = img.clamp(min=-32000, max=32000)
+            txt = txt.clamp(min=-32000, max=32000)
         return img, txt
 
 
@@ -457,6 +459,7 @@ class SingleStreamBlock(nn.Module):
         self.K = 3
         self.H = self.num_heads
         self.KH = self.K * self.H
+        self.do_clamp = dtype == torch.float16
 
     def forward(self, x: Tensor, vec: Tensor, pe: Tensor) -> Tensor:
         mod = self.modulation(vec)[0]
@@ -471,10 +474,12 @@ class SingleStreamBlock(nn.Module):
         q, k, v = qkv.reshape(B, L, self.K, self.H, D // self.KH).permute(2, 0, 3, 1, 4)
         q, k = self.norm(q, k, v)
         attn = attention(q, k, v, pe=pe)
-        output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2)).clamp(
-            min=-384 * 4, max=384 * 4
-        )
-        return x + mod.gate * output
+        output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
+        if self.do_clamp:
+            out = (x + mod.gate * output).clamp(min=-32000, max=32000)
+        else:
+            out = x + mod.gate * output
+        return out
 
 
 class LastLayer(nn.Module):

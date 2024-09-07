@@ -29,6 +29,8 @@ def auto_quantization_config(
         return BitsAndBytesConfig(load_in_8bit=True, llm_int8_has_fp16_weight=False)
     elif quantization_dtype == "qint2":
         return QuantoConfig(weights="int2")
+    elif quantization_dtype is None or quantization_dtype == "bfloat16":
+        return None
     else:
         raise ValueError(f"Unsupported quantization dtype: {quantization_dtype}")
 
@@ -57,7 +59,11 @@ class HFEmbedder(nn.Module):
         self.output_key = "pooler_output" if self.is_clip else "last_hidden_state"
 
         auto_quant_config = (
-            auto_quantization_config(quantization_dtype) if quantization_dtype else None
+            auto_quantization_config(quantization_dtype)
+            if quantization_dtype is not None
+            and quantization_dtype != "bfloat16"
+            and quantization_dtype != "float16"
+            else None
         )
 
         # BNB will move to cuda:0 by default if not specified
