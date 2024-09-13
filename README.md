@@ -16,6 +16,8 @@ Note:
 | 1024x1024  | RTX4090    | bfl codebase fp8 wo quant  | 1.7          |
 | 1024x1024  | RTX4090    | ❌ compile blocks & extras | 2.55         |
 | 1024x1024  | RTX4090    | ✅ compile blocks & extras | 3.51         |
+| 1024x1024  | RTX4000ADA | ❌ compile blocks & extras | 0.79         |
+| 1024x1024  | RTX4000ADA | ✅ compile blocks & extras | 1.26         |
 | 1024x1024  | RTX6000ADA | bfl codebase               | 1.74         |
 | 1024x1024  | RTX6000ADA | ❌ compile blocks & extras | 2.08         |
 | 1024x1024  | RTX6000ADA | ✅ compile blocks & extras | 2.8          |
@@ -24,6 +26,8 @@ Note:
 | 768x768    | RTX4090    | bfl codebase fp8 wo quant  | 2.32         |
 | 768x768    | RTX4090    | ❌ compile blocks & extras | 4.47         |
 | 768x768    | RTX4090    | ✅ compile blocks & extras | 6.2          |
+| 768x768    | RTX4000    | ❌ compile blocks & extras | 1.41         |
+| 768x768    | RTX4000    | ✅ compile blocks & extras | 2.19         |
 | 768x768    | RTX6000ADA | bfl codebase               | 3.01         |
 | 768x768    | RTX6000ADA | ❌ compile blocks & extras | 3.43         |
 | 768x768    | RTX6000ADA | ✅ compile blocks & extras | 4.46         |
@@ -32,6 +36,8 @@ Note:
 | 1024x720   | RTX4090    | bfl codebase fp8 wo quant  | 3.01         |
 | 1024x720   | RTX4090    | ❌ compile blocks & extras | 3.6          |
 | 1024x720   | RTX4090    | ✅ compile blocks & extras | 4.96         |
+| 1024x720   | RTX4000    | ❌ compile blocks & extras | 1.14         |
+| 1024x720   | RTX4000    | ✅ compile blocks & extras | 1.78         |
 | 1024x720   | RTX6000ADA | bfl codebase               | 2.37         |
 | 1024x720   | RTX6000ADA | ❌ compile blocks & extras | 2.87         |
 | 1024x720   | RTX6000ADA | ✅ compile blocks & extras | 3.78         |
