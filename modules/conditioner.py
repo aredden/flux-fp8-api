@@ -43,6 +43,7 @@ class HFEmbedder(nn.Module):
         device: torch.device | int,
         quantization_dtype: str | None = None,
         offloading_device: torch.device | int | None = torch.device("cpu"),
+        is_clip: bool = False,
         **hf_kwargs,
     ):
         super().__init__()
@@ -54,7 +55,7 @@ class HFEmbedder(nn.Module):
         self.device = (
             device if isinstance(device, torch.device) else torch.device(device)
         )
-        self.is_clip = version.startswith("openai")
+        self.is_clip = version.startswith("openai") or is_clip
         self.max_length = max_length
         self.output_key = "pooler_output" if self.is_clip else "last_hidden_state"
 
