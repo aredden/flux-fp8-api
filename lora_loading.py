@@ -13,7 +13,7 @@ except Exception as e:
 from float8_quantize import F8Linear
 from modules.flux_model import Flux
 
-path_regex = re.compile(r"\/|\\")
+path_regex = re.compile(r"/|\\")
 
 StateDict: TypeAlias = OrderedDict[str, torch.Tensor]
 
@@ -138,59 +138,126 @@ def convert_diffusers_to_flux_transformer_checkpoint(
             f"double_blocks.{i}.txt_mod.lin.weight",
         )
 
-        sample_q_A = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.to_q.lora_A.weight"
-        )
-        sample_q_B = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.to_q.lora_B.weight"
-        )
+        # Q, K, V
+        temp_dict = {}
 
-        sample_k_A = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.to_k.lora_A.weight"
-        )
-        sample_k_B = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.to_k.lora_B.weight"
-        )
+        expected_shape_qkv_a = None
+        expected_shape_qkv_b = None
+        expected_shape_add_qkv_a = None
+        expected_shape_add_qkv_b = None
+        dtype = None
+        device = None
 
-        sample_v_A = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.to_v.lora_A.weight"
-        )
-        sample_v_B = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.to_v.lora_B.weight"
-        )
+        for component in [
+            "to_q",
+            "to_k",
+            "to_v",
+            "add_q_proj",
+            "add_k_proj",
+            "add_v_proj",
+        ]:
 
-        context_q_A = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.add_q_proj.lora_A.weight"
-        )
-        context_q_B = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.add_q_proj.lora_B.weight"
-        )
+            sample_component_A_key = (
+                f"{prefix}{block_prefix}attn.{component}.lora_A.weight"
+            )
+            sample_component_B_key = (
+                f"{prefix}{block_prefix}attn.{component}.lora_B.weight"
+            )
+            if (
+                sample_component_A_key in diffusers_state_dict
+                and sample_component_B_key in diffusers_state_dict
+            ):
+                sample_component_A = diffusers_state_dict.pop(sample_component_A_key)
+                sample_component_B = diffusers_state_dict.pop(sample_component_B_key)
+                temp_dict[f"{component}"] = [sample_component_A, sample_component_B]
+                if expected_shape_qkv_a is None and not component.startswith("add_"):
+                    expected_shape_qkv_a = sample_component_A.shape
+                    expected_shape_qkv_b = sample_component_B.shape
+                    dtype = sample_component_A.dtype
+                    device = sample_component_A.device
+                if expected_shape_add_qkv_a is None and component.startswith("add_"):
+                    expected_shape_add_qkv_a = sample_component_A.shape
+                    expected_shape_add_qkv_b = sample_component_B.shape
+                    dtype = sample_component_A.dtype
+                    device = sample_component_A.device
+            else:
+                logger.info(
+                    f"Skipping layer {i} since no LoRA weight is available for {sample_component_A_key}"
+                )
+                temp_dict[f"{component}"] = [None, None]
 
-        context_k_A = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.add_k_proj.lora_A.weight"
-        )
-        context_k_B = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.add_k_proj.lora_B.weight"
-        )
-        context_v_A = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.add_v_proj.lora_A.weight"
-        )
-        context_v_B = diffusers_state_dict.pop(
-            f"{prefix}{block_prefix}attn.add_v_proj.lora_B.weight"
-        )
+        if device is not None:
+            if expected_shape_qkv_a is not None:
 
-        original_state_dict[f"double_blocks.{i}.img_attn.qkv.lora_A.weight"] = (
-            torch.cat([sample_q_A, sample_k_A, sample_v_A], dim=0)
-        )
-        original_state_dict[f"double_blocks.{i}.img_attn.qkv.lora_B.weight"] = (
-            torch.cat([sample_q_B, sample_k_B, sample_v_B], dim=0)
-        )
-        original_state_dict[f"double_blocks.{i}.txt_attn.qkv.lora_A.weight"] = (
-            torch.cat([context_q_A, context_k_A, context_v_A], dim=0)
-        )
-        original_state_dict[f"double_blocks.{i}.txt_attn.qkv.lora_B.weight"] = (
-            torch.cat([context_q_B, context_k_B, context_v_B], dim=0)
-        )
+                if (sq := temp_dict["to_q"])[0] is not None:
+                    sample_q_A, sample_q_B = sq
+                else:
+                    sample_q_A, sample_q_B = [
+                        torch.zeros(expected_shape_qkv_a, dtype=dtype, device=device),
+                        torch.zeros(expected_shape_qkv_b, dtype=dtype, device=device),
+                    ]
+                if (sq := temp_dict["to_k"])[0] is not None:
+                    sample_k_A, sample_k_B = sq
+                else:
+                    sample_k_A, sample_k_B = [
+                        torch.zeros(expected_shape_qkv_a, dtype=dtype, device=device),
+                        torch.zeros(expected_shape_qkv_b, dtype=dtype, device=device),
+                    ]
+                if (sq := temp_dict["to_v"])[0] is not None:
+                    sample_v_A, sample_v_B = sq
+                else:
+                    sample_v_A, sample_v_B = [
+                        torch.zeros(expected_shape_qkv_a, dtype=dtype, device=device),
+                        torch.zeros(expected_shape_qkv_b, dtype=dtype, device=device),
+                    ]
+                original_state_dict[f"double_blocks.{i}.img_attn.qkv.lora_A.weight"] = (
+                    torch.cat([sample_q_A, sample_k_A, sample_v_A], dim=0)
+                )
+                original_state_dict[f"double_blocks.{i}.img_attn.qkv.lora_B.weight"] = (
+                    torch.cat([sample_q_B, sample_k_B, sample_v_B], dim=0)
+                )
+            if expected_shape_add_qkv_a is not None:
+
+                if (sq := temp_dict["add_q_proj"])[0] is not None:
+                    context_q_A, context_q_B = sq
+                else:
+                    context_q_A, context_q_B = [
+                        torch.zeros(
+                            expected_shape_add_qkv_a, dtype=dtype, device=device
+                        ),
+                        torch.zeros(
+                            expected_shape_add_qkv_b, dtype=dtype, device=device
+                        ),
+                    ]
+                if (sq := temp_dict["add_k_proj"])[0] is not None:
+                    context_k_A, context_k_B = sq
+                else:
+                    context_k_A, context_k_B = [
+                        torch.zeros(
+                            expected_shape_add_qkv_a, dtype=dtype, device=device
+                        ),
+                        torch.zeros(
+                            expected_shape_add_qkv_b, dtype=dtype, device=device
+                        ),
+                    ]
+                if (sq := temp_dict["add_v_proj"])[0] is not None:
+                    context_v_A, context_v_B = sq
+                else:
+                    context_v_A, context_v_B = [
+                        torch.zeros(
+                            expected_shape_add_qkv_a, dtype=dtype, device=device
+                        ),
+                        torch.zeros(
+                            expected_shape_add_qkv_b, dtype=dtype, device=device
+                        ),
+                    ]
+
+                original_state_dict[f"double_blocks.{i}.txt_attn.qkv.lora_A.weight"] = (
+                    torch.cat([context_q_A, context_k_A, context_v_A], dim=0)
+                )
+                original_state_dict[f"double_blocks.{i}.txt_attn.qkv.lora_B.weight"] = (
+                    torch.cat([context_q_B, context_k_B, context_v_B], dim=0)
+                )
 
         # qk_norm
         original_state_dict, diffusers_state_dict = convert_if_lora_exists(
@@ -265,32 +332,73 @@ def convert_diffusers_to_flux_transformer_checkpoint(
     for i in range(num_single_layers):
         block_prefix = f"single_transformer_blocks.{i}."
         # norm.linear -> single_blocks.0.modulation.lin
+        key_norm = f"{prefix}{block_prefix}norm.linear.weight"
         original_state_dict, diffusers_state_dict = convert_if_lora_exists(
             original_state_dict,
             diffusers_state_dict,
-            f"{prefix}{block_prefix}norm.linear.weight",
+            key_norm,
             f"single_blocks.{i}.modulation.lin.weight",
         )
 
+        has_q, has_k, has_v, has_mlp = False, False, False, False
+        shape_qkv_a = None
+        shape_qkv_b = None
         # Q, K, V, mlp
         q_A = diffusers_state_dict.pop(f"{prefix}{block_prefix}attn.to_q.lora_A.weight")
         q_B = diffusers_state_dict.pop(f"{prefix}{block_prefix}attn.to_q.lora_B.weight")
+        if q_A is not None and q_B is not None:
+            has_q = True
+            shape_qkv_a = q_A.shape
+            shape_qkv_b = q_B.shape
         k_A = diffusers_state_dict.pop(f"{prefix}{block_prefix}attn.to_k.lora_A.weight")
         k_B = diffusers_state_dict.pop(f"{prefix}{block_prefix}attn.to_k.lora_B.weight")
+        if k_A is not None and k_B is not None:
+            has_k = True
+            shape_qkv_a = k_A.shape
+            shape_qkv_b = k_B.shape
         v_A = diffusers_state_dict.pop(f"{prefix}{block_prefix}attn.to_v.lora_A.weight")
         v_B = diffusers_state_dict.pop(f"{prefix}{block_prefix}attn.to_v.lora_B.weight")
+        if v_A is not None and v_B is not None:
+            has_v = True
+            shape_qkv_a = v_A.shape
+            shape_qkv_b = v_B.shape
         mlp_A = diffusers_state_dict.pop(
             f"{prefix}{block_prefix}proj_mlp.lora_A.weight"
         )
         mlp_B = diffusers_state_dict.pop(
             f"{prefix}{block_prefix}proj_mlp.lora_B.weight"
         )
-        original_state_dict[f"single_blocks.{i}.linear1.lora_A.weight"] = torch.cat(
-            [q_A, k_A, v_A, mlp_A], dim=0
-        )
-        original_state_dict[f"single_blocks.{i}.linear1.lora_B.weight"] = torch.cat(
-            [q_B, k_B, v_B, mlp_B], dim=0
-        )
+        if mlp_A is not None and mlp_B is not None:
+            has_mlp = True
+            shape_qkv_a = mlp_A.shape
+            shape_qkv_b = mlp_B.shape
+        if any([has_q, has_k, has_v, has_mlp]):
+            if not has_q:
+                q_A, q_B = [
+                    torch.zeros(shape_qkv_a, dtype=dtype, device=device),
+                    torch.zeros(shape_qkv_b, dtype=dtype, device=device),
+                ]
+            if not has_k:
+                k_A, k_B = [
+                    torch.zeros(shape_qkv_a, dtype=dtype, device=device),
+                    torch.zeros(shape_qkv_b, dtype=dtype, device=device),
+                ]
+            if not has_v:
+                v_A, v_B = [
+                    torch.zeros(shape_qkv_a, dtype=dtype, device=device),
+                    torch.zeros(shape_qkv_b, dtype=dtype, device=device),
+                ]
+            if not has_mlp:
+                mlp_A, mlp_B = [
+                    torch.zeros(shape_qkv_a, dtype=dtype, device=device),
+                    torch.zeros(shape_qkv_b, dtype=dtype, device=device),
+                ]
+            original_state_dict[f"single_blocks.{i}.linear1.lora_A.weight"] = torch.cat(
+                [q_A, k_A, v_A, mlp_A], dim=0
+            )
+            original_state_dict[f"single_blocks.{i}.linear1.lora_B.weight"] = torch.cat(
+                [q_B, k_B, v_B, mlp_B], dim=0
+            )
 
         # output projections
         original_state_dict, diffusers_state_dict = convert_if_lora_exists(
@@ -324,9 +432,16 @@ def convert_diffusers_to_flux_transformer_checkpoint(
     return original_state_dict
 
 
-def convert_from_original_flux_checkpoint(
-    original_state_dict,
-):
+def convert_from_original_flux_checkpoint(original_state_dict: StateDict) -> StateDict:
+    """
+    Convert the state dict from the original Flux checkpoint format to the new format.
+
+    Args:
+        original_state_dict (Dict[str, torch.Tensor]): The original Flux checkpoint state dict.
+
+    Returns:
+        Dict[str, torch.Tensor]: The converted state dict in the new format.
+    """
     sd = {
         k.replace("lora_unet_", "")
         .replace("double_blocks_", "double_blocks.")
@@ -358,12 +473,37 @@ def get_module_for_key(
     return module
 
 
-def get_lora_for_key(key: str, lora_weights: dict):
+def get_lora_for_key(
+    key: str, lora_weights: dict
+) -> Optional[Tuple[torch.Tensor, torch.Tensor, Optional[float]]]:
+    """
+    Get LoRA weights for a specific key.
+
+    Args:
+        key (str): The key to look up in the LoRA weights.
+        lora_weights (dict): Dictionary containing LoRA weights.
+
+    Returns:
+        Optional[Tuple[torch.Tensor, torch.Tensor, Optional[float]]]: A tuple containing lora_A, lora_B, and alpha if found, None otherwise.
+    """
     prefix = key.split(".lora")[0]
-    lora_A = lora_weights[f"{prefix}.lora_A.weight"]
-    lora_B = lora_weights[f"{prefix}.lora_B.weight"]
-    alpha = lora_weights.get(f"{prefix}.alpha", None)
+    lora_A = lora_weights.get(f"{prefix}.lora_A.weight")
+    lora_B = lora_weights.get(f"{prefix}.lora_B.weight")
+    alpha = lora_weights.get(f"{prefix}.alpha")
+
+    if lora_A is None or lora_B is None:
+        return None
     return lora_A, lora_B, alpha
+
+
+def get_module_for_key(
+    key: str, model: Flux
+) -> F8Linear | torch.nn.Linear | CublasLinear:
+    parts = key.split(".")
+    module = model
+    for part in parts:
+        module = getattr(module, part)
+    return module
 
 
 def calculate_lora_weight(
@@ -389,12 +529,16 @@ def calculate_lora_weight(
     w_down = lora_B.to(dtype=dtype, device=device)
 
     if alpha != rank:
-        w_up = w_up * (alpha / rank)
-
+        w_up = w_up * alpha / rank
     if uneven_rank:
-        fused_lora = lora_scale * torch.mm(
-            w_down.repeat_interleave(int(rank_diff), dim=1), w_up
+        # Fuse each lora instead of repeat interleave for each individual lora,
+        # seems to fuse more correctly.
+        fused_lora = torch.zeros(
+            (lora_B.shape[0], lora_A.shape[1]), device=device, dtype=dtype
         )
+        w_up = w_up.chunk(int(rank_diff), dim=0)
+        for w_up_chunk in w_up:
+            fused_lora = fused_lora + (lora_scale * torch.mm(w_down, w_up_chunk))
     else:
         fused_lora = lora_scale * torch.mm(w_down, w_up)
     return fused_lora
@@ -445,16 +589,6 @@ def resolve_lora_state_dict(lora_weights, has_guidance: bool = True):
         lora_weights = convert_from_original_flux_checkpoint(lora_weights)
     logger.info("LoRA weights loaded")
     logger.debug("Extracting keys")
-    keys_without_ab = [
-        key.replace(".lora_A.weight", "")
-        .replace(".lora_B.weight", "")
-        .replace(".lora_A", "")
-        .replace(".lora_B", "")
-        .replace(".alpha", "")
-        for key in lora_weights.keys()
-    ]
-    logger.debug("Keys extracted")
-    keys_without_ab = list(set(keys_without_ab))
     keys_without_ab = list(
         set(
             [
@@ -463,10 +597,11 @@ def resolve_lora_state_dict(lora_weights, has_guidance: bool = True):
                 .replace(".lora_A", "")
                 .replace(".lora_B", "")
                 .replace(".alpha", "")
-                for key in keys_without_ab
+                for key in lora_weights.keys()
             ]
         )
     )
+    logger.debug("Keys extracted")
     return keys_without_ab, lora_weights
 
 
@@ -513,6 +648,9 @@ def apply_lora_to_model(
         module = get_module_for_key(key, model)
         weight, is_f8, dtype = extract_weight_from_linear(module)
         lora_sd = get_lora_for_key(key, lora_weights)
+        if lora_sd is None:
+            # Skipping LoRA application for this module
+            continue
         weight = apply_lora_weight_to_module(weight, lora_sd, lora_scale=lora_scale)
         if is_f8:
             module.set_weight_tensor(weight.type(dtype))
@@ -540,6 +678,9 @@ def remove_lora_from_module(
         module = get_module_for_key(key, model)
         weight, is_f8, dtype = extract_weight_from_linear(module)
         lora_sd = get_lora_for_key(key, lora_weights)
+        if lora_sd is None:
+            # Skipping LoRA application for this module
+            continue
         weight = unfuse_lora_weight_from_module(weight, lora_sd, lora_scale=lora_scale)
         if is_f8:
             module.set_weight_tensor(weight.type(dtype))

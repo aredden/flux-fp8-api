@@ -2,7 +2,7 @@ import io
 import math
 import random
 import warnings
-from typing import TYPE_CHECKING, Callable, List
+from typing import TYPE_CHECKING, Callable, List, OrderedDict, Union
 
 import numpy as np
 from PIL import Image
@@ -148,7 +148,9 @@ class FluxPipeline:
             random.seed(seed)
         return cuda_generator, seed
 
-    def load_lora(self, lora_path: str, scale: float):
+    def load_lora(
+        self, lora_path: Union[str, OrderedDict[str, torch.Tensor]], scale: float
+    ):
         """
         Loads a LoRA checkpoint into the Flux flow transformer.
 
@@ -156,11 +158,20 @@ class FluxPipeline:
         or loras which contain keys which start with lora_unet_[...].
 
         Args:
-            lora_path (str): Path to the LoRA checkpoint.
+            lora_path (str | OrderedDict[str, torch.Tensor]): Path to the LoRA checkpoint or an ordered dictionary containing the LoRA weights.
             scale (float): Scaling factor for the LoRA weights.
 
         """
-        self.model = lora_loading.apply_lora_to_model(self.model, lora_path, scale)
+        self.model.load_lora(lora_path, scale)
+
+    def unload_lora(self, path_or_identifier: str):
+        """
+        Unloads the LoRA checkpoint from the Flux flow transformer.
+
+        Args:
+            path_or_identifier (str): Path to the LoRA checkpoint or the name given to the LoRA checkpoint when it was loaded.
+        """
+        self.model.unload_lora(path_or_identifier)
 
     @torch.inference_mode()
     def compile(self):
