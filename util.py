@@ -34,11 +34,14 @@ class QuantizationDtype(StrEnum):
     bfloat16 = "bfloat16"
     float16 = "float16"
 
+
 class ModelSpec(BaseModel):
     version: ModelVersion
     params: FluxParams
     ae_params: AutoEncoderParams
     ckpt_path: str | None
+    # Add option to pass in custom clip model
+    clip_path: str | None = "openai/clip-vit-large-patch14"
     ae_path: str | None
     repo_id: str | None
     repo_flow: str | None
@@ -255,10 +258,11 @@ def load_flow_model(config: ModelSpec) -> Flux:
 
 def load_text_encoders(config: ModelSpec) -> tuple[HFEmbedder, HFEmbedder]:
     clip = HFEmbedder(
-        "openai/clip-vit-large-patch14",
+        config.clip_path,
         max_length=77,
         torch_dtype=into_dtype(config.text_enc_dtype),
         device=into_device(config.text_enc_device).index or 0,
+        is_clip=True,
         quantization_dtype=config.clip_quantization_dtype,
     )
     t5 = HFEmbedder(

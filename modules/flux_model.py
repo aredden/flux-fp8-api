@@ -1,11 +1,13 @@
-from collections import namedtuple
 import os
-from typing import TYPE_CHECKING
+from collections import namedtuple
+from typing import TYPE_CHECKING, List
+
 import torch
+from loguru import logger
 
 if TYPE_CHECKING:
+    from lora_loading import LoraWeights
     from util import ModelSpec
-
 DISABLE_COMPILE = os.getenv("DISABLE_COMPILE", "0") == "1"
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
@@ -14,8 +16,8 @@ torch.backends.cudnn.benchmark_limit = 20
 torch.set_float32_matmul_precision("high")
 import math
 
-from torch import Tensor, nn
 from pydantic import BaseModel
+from torch import Tensor, nn
 from torch.nn import functional as F
 
 
@@ -345,6 +347,7 @@ class DoubleStreamBlock(nn.Module):
         self.H = self.num_heads
         self.KH = self.K * self.H
         self.do_clamp = dtype == torch.float16
+
     def rearrange_for_norm(self, x: Tensor) -> tuple[Tensor, Tensor, Tensor]:
         B, L, D = x.shape
         q, k, v = x.reshape(B, L, self.K, self.H, D // self.KH).permute(2, 0, 3, 1, 4)
@@ -512,6 +515,7 @@ class Flux(nn.Module):
         self.params = config.params
         self.in_channels = config.params.in_channels
         self.out_channels = self.in_channels
+        self.loras: List[LoraWeights] = []
         prequantized_flow = config.prequantized_flow
         quantized_embedders = config.quantize_flow_embedder_layers and prequantized_flow
         quantized_modulation = config.quantize_modulation and prequantized_flow
@@ -614,6 +618,57 @@ class Flux(nn.Module):
 
         self.final_layer = LastLayer(self.hidden_size, 1, self.out_channels)
 
+    def get_lora(self, identifier: str):
+        for lora in self.loras:
+            if lora.path == identifier or lora.name == identifier:
+                return lora
+
+    def has_lora(self, identifier: str):
+        for lora in self.loras:
+            if lora.path == identifier or lora.name == identifier:
+                return True
+
+    def load_lora(self, path: str, scale: float, name: str = None):
+        from lora_loading import (
+            LoraWeights,
+            apply_lora_to_model,
+            remove_lora_from_module,
+        )
+
+        if self.has_lora(path):
+            lora = self.get_lora(path)
+            if lora.scale == scale:
+                logger.warning(
+                    f"Lora {lora.name} already loaded with same scale - ignoring!"
+                )
+            else:
+                remove_lora_from_module(self, lora, lora.scale)
+                apply_lora_to_model(self, lora, scale)
+                for idx, lora_ in enumerate(self.loras):
+                    if lora_.path == lora.path:
+                        self.loras[idx].scale = scale
+                        break
+        else:
+            _, lora = apply_lora_to_model(self, path, scale, return_lora_resolved=True)
+            self.loras.append(LoraWeights(lora, path, name, scale))
+
+    def unload_lora(self, path_or_identifier: str):
+        from lora_loading import remove_lora_from_module
+
+        removed = False
+        for idx, lora_ in enumerate(list(self.loras)):
+            if lora_.path == path_or_identifier or lora_.name == path_or_identifier:
+                remove_lora_from_module(self, lora_.weights, lora_.scale)
+                self.loras.pop(idx)
+                removed = True
+                break
+        if not removed:
+            logger.warning(
+                f"Couldn't remove lora {path_or_identifier} as it wasn't found fused to the model!"
+            )
+        else:
+            logger.info("Successfully removed lora from module.")
+
     def forward(
         self,
         img: Tensor,
@@ -664,8 +719,9 @@ class Flux(nn.Module):
     def from_pretrained(
         cls: "Flux", path: str, dtype: torch.dtype = torch.float16
     ) -> "Flux":
-        from util import load_config_from_path
         from safetensors.torch import load_file
+
+        from util import load_config_from_path
 
         config = load_config_from_path(path)
         with torch.device("meta"):
