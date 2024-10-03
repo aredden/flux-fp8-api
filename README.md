@@ -92,6 +92,39 @@ pipeline.load_lora(lora_path, scale=1.0)
 -   Make BF16 _not_ clamp, which improves quality and isn't needed because bf16 is the expected dtype for flux. **I would now recommend always using `"flow_dtype": "bfloat16"` in the config**, though it will slow things down on consumer gpus- but not by much at all since most of the compute still happens via fp8.
 -   Allow for the T5 Model to be run without any quantization, by specifying `"text_enc_quantization_dtype": "bfloat16"` in the config - or also `"float16"`, though not recommended since t5 deviates a bit when running with float16. I noticed that even with qint8/qfloat8 there is a bit of deviation from bf16 text encoder outputs- so for those who want more accurate / expected text encoder outputs, you can use this option.
 
+### Updates 10/3/24
+
+-   #### Adding configurable clip model path
+    Now you can specify the clip model's path in the config, using the `clip_path` parameter in a config file.
+-   #### Improved lora loading
+    I believe I have fixed the lora loading bug that was causing the lora to not apply properly, or when not all of the linear weights in the q/k/v/o had loras attached (it wouldn't be able to apply if only some of them did).
+-   #### Lora loading via api endpoint
+
+    You can now post to the `/lora` endpoint with a json file containing a `scale`, `path`, `name`, and `action` parameters.
+
+    The `path` should be the path to the lora safetensors file either absolute or relative to the root of this repo.
+
+    The `name` is an optional parameter, mainly just for checking purposes to see if the correct lora was being loaded, it's used as an identifier to check whether it's already been loaded or which lora to unload if `action` is `unload` (you can also use the exact same path which was loaded previously to unload the same lora).
+
+    The `action` should be either `load` or `unload`, to load or unload the lora.
+
+    The `scale` should be a float, which is the scale of the lora.
+
+    e.g.
+
+    ```json
+    {
+        <!-- If you have a lora directory like 'fluxloras' in the root of this repo -->
+        "path": "./fluxloras/loras/aidmaImageUpgrader-FLUX-V0.2.safetensors",
+        <!-- name is optional -->
+        "name": "imgupgrade",
+        <!-- action (load or unload) is required -->
+        "action": "load",
+        <!-- lora scale to use -->
+        "scale": 0.6
+    }
+    ```
+
 ## Installation
 
 This repo _requires_ at least pytorch with cuda=12.4 and an ADA gpu with fp8 support, otherwise `torch._scaled_mm` will throw a CUDA error saying it's not supported. To install with conda/mamba:
