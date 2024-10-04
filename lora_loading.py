@@ -606,7 +606,7 @@ def resolve_lora_state_dict(lora_weights, has_guidance: bool = True):
 
 
 def get_lora_weights(lora_path: str | StateDict):
-    if isinstance(lora_path, dict):
+    if isinstance(lora_path, (dict, LoraWeights)):
         return lora_path, True
     else:
         return load_file(lora_path, "cpu"), False
@@ -640,10 +640,41 @@ def apply_lora_to_model(
 ) -> Flux:
     has_guidance = model.params.guidance_embed
     logger.info(f"Loading LoRA weights for {lora_path}")
-    lora_weights, _ = get_lora_weights(lora_path)
+    lora_weights, already_loaded = get_lora_weights(lora_path)
 
-    keys_without_ab, lora_weights = resolve_lora_state_dict(lora_weights, has_guidance)
-
+    if not already_loaded:
+        keys_without_ab, lora_weights = resolve_lora_state_dict(
+            lora_weights, has_guidance
+        )
+    elif isinstance(lora_weights, LoraWeights):
+        b_ = lora_weights
+        lora_weights = b_.weights
+        keys_without_ab = list(
+            set(
+                [
+                    key.replace(".lora_A.weight", "")
+                    .replace(".lora_B.weight", "")
+                    .replace(".lora_A", "")
+                    .replace(".lora_B", "")
+                    .replace(".alpha", "")
+                    for key in lora_weights.keys()
+                ]
+            )
+        )
+    else:
+        lora_weights = lora_weights
+        keys_without_ab = list(
+            set(
+                [
+                    key.replace(".lora_A.weight", "")
+                    .replace(".lora_B.weight", "")
+                    .replace(".lora_A", "")
+                    .replace(".lora_B", "")
+                    .replace(".alpha", "")
+                    for key in lora_weights.keys()
+                ]
+            )
+        )
     for key in tqdm(keys_without_ab, desc="Applying LoRA", total=len(keys_without_ab)):
         module = get_module_for_key(key, model)
         weight, is_f8, dtype = extract_weight_from_linear(module)
@@ -669,10 +700,42 @@ def remove_lora_from_module(
 ):
     has_guidance = model.params.guidance_embed
     logger.info(f"Loading LoRA weights for {lora_path}")
-    lora_weights = get_lora_weights(lora_path)
-    lora_weights, _ = get_lora_weights(lora_path)
+    lora_weights, already_loaded = get_lora_weights(lora_path)
 
-    keys_without_ab, lora_weights = resolve_lora_state_dict(lora_weights, has_guidance)
+    if not already_loaded:
+        keys_without_ab, lora_weights = resolve_lora_state_dict(
+            lora_weights, has_guidance
+        )
+    elif isinstance(lora_weights, LoraWeights):
+        b_ = lora_weights
+        lora_weights = b_.weights
+        keys_without_ab = list(
+            set(
+                [
+                    key.replace(".lora_A.weight", "")
+                    .replace(".lora_B.weight", "")
+                    .replace(".lora_A", "")
+                    .replace(".lora_B", "")
+                    .replace(".alpha", "")
+                    for key in lora_weights.keys()
+                ]
+            )
+        )
+        lora_scale = b_.scale
+    else:
+        lora_weights = lora_weights
+        keys_without_ab = list(
+            set(
+                [
+                    key.replace(".lora_A.weight", "")
+                    .replace(".lora_B.weight", "")
+                    .replace(".lora_A", "")
+                    .replace(".lora_B", "")
+                    .replace(".alpha", "")
+                    for key in lora_weights.keys()
+                ]
+            )
+        )
 
     for key in tqdm(keys_without_ab, desc="Unfusing LoRA", total=len(keys_without_ab)):
         module = get_module_for_key(key, model)
