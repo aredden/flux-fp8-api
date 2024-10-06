@@ -203,24 +203,27 @@ def group_tokens_and_weights(
             , weights = token_weight_list
         )
     """
+    # TODO: Possibly need to fix this, since this doesn't seem correct.
+    # Ignoring for now since I don't know what the consequences might be
+    # if changed to <= instead of <.
     max_len = max_length - 2 if max_length < 77 else max_length
     # this will be a 2d list
     new_token_ids = []
     new_weights = []
     while len(token_ids) >= max_len:
         # get the first 75 tokens
-        head_75_tokens = [token_ids.pop(0) for _ in range(max_len)]
-        head_75_weights = [weights.pop(0) for _ in range(max_len)]
+        temp_77_token_ids = [token_ids.pop(0) for _ in range(max_len)]
+        temp_77_weights = [weights.pop(0) for _ in range(max_len)]
 
         # extract token ids and weights
 
         if pad_tokens:
             if bos is not None:
-                temp_77_token_ids = [bos] + head_75_tokens + [eos]
-                temp_77_weights = [1.0] + head_75_weights + [1.0]
+                temp_77_token_ids = [bos] + temp_77_token_ids + [eos]
+                temp_77_weights = [1.0] + temp_77_weights + [1.0]
             else:
-                temp_77_token_ids = head_75_tokens + [eos]
-                temp_77_weights = head_75_weights + [1.0]
+                temp_77_token_ids = temp_77_token_ids + [eos]
+                temp_77_weights = temp_77_weights + [1.0]
 
         # add 77 token and weights chunk to the holder list
         new_token_ids.append(temp_77_token_ids)
