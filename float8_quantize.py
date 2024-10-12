@@ -371,7 +371,7 @@ def recursive_swap_linears(
 
 @torch.inference_mode()
 def swap_to_cublaslinear(model: nn.Module):
-    if not isinstance(CublasLinear, type(torch.nn.Module)):
+    if CublasLinear == type(None):
         return
     for name, child in model.named_children():
         if isinstance(child, nn.Linear) and not isinstance(
@@ -485,7 +485,7 @@ def quantize_flow_transformer_and_dispatch_float8(
     if (
         swap_linears_with_cublaslinear
         and flow_dtype == torch.float16
-        and isinstance(CublasLinear, type(torch.nn.Linear))
+        and CublasLinear != type(None)
     ):
         swap_to_cublaslinear(flow_model)
     elif swap_linears_with_cublaslinear and flow_dtype != torch.float16:

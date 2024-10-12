@@ -626,7 +626,7 @@ def extract_weight_from_linear(linear: Union[nn.Linear, CublasLinear, F8Linear])
         )
     elif isinstance(linear, torch.nn.Linear):
         weight = linear.weight.clone().detach().float()
-    elif isinstance(linear, CublasLinear):
+    elif isinstance(linear, CublasLinear) and CublasLinear != type(None):
         weight = linear.weight.clone().detach().float()
     return weight, weight_is_f8, dtype
 
